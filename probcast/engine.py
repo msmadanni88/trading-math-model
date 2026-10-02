@@ -236,20 +236,27 @@ class Engine:
         W = rnd(student.fit(X, Y))            # rounded: the published numbers ARE the ones used
         res = Y - X @ W.T
         r2 = 1 - res.var(0) / np.maximum(Y.var(0), 1e-12)
-        # candles 2..HORIZON: learned from what the market really did
-        H, oT, oY = [], self.oT.view(), self.oY.view()
-        Xa, Sa = self.sX.view(), self.sS.view()
-        for h in range(2, HORIZON + 1):
-            tt = T + (h - 1) * GRAN
-            idx = np.minimum(np.searchsorted(oT, tt), len(oT) - 1) if len(oT) else np.zeros(len(tt), int)
-            use = (oT[idx] == tt) & (tt <= cutoff_ts) if len(oT) else np.zeros(len(tt), bool)
-            if use.sum() < 1500:
-                H = None
-                break
-            o = oY[idx[use]]
-            H.append(student.fit(Xa[use], student.outcome_targets(o[:, 0], o[:, 1], o[:, 2], Sa[use]), student.RIDGE_H))
+        # candles 2..HORIZON: learned from what the market really did. While
+        # replaying history these heads are refitted every 30 minutes instead
+        # of every 5 (the last ones are reused in between) to keep a rebuild fast.
+        prev = self.versions[-1] if self.versions else None
+        if self.simulate_publish and prev is not None and prev.get("H") is not None and eff % 1800 != 0:
+            H = prev["H"]
+        else:
+            H, oT, oY = [], self.oT.view(), self.oY.view()
+            Xa, Sa = self.sX.view(), self.sS.view()
+            for h in range(2, HORIZON + 1):
+                tt = T + (h - 1) * GRAN
+                idx = np.minimum(np.searchsorted(oT, tt), len(oT) - 1)
+                use = (oT[idx] == tt) & (tt <= cutoff_ts)
+                if use.sum() < 1500:
+                    H = None
+                    break
+                o = oY[idx[use]]
+                H.append(student.fit(Xa[use], student.outcome_targets(o[:, 0], o[:, 1], o[:, 2], Sa[use]), student.RIDGE_H))
+            H = None if H is None else rnd(np.array(H))
         self.versions.append({
-            "eff": int(eff), "W": W, "H": None if H is None else rnd(np.array(H)),
+            "eff": int(eff), "W": W, "H": H,
             "scale": [[float(x) for x in t.scales()] for t in self.tuners_h],
             "cone": [float(f"{c:.6g}") for c in self.cone],
             "n": int(len(X)), "r2": [round(float(x), 3) for x in r2]})
