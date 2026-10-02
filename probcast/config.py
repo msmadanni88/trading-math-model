@@ -18,7 +18,9 @@ LGBM_HOLDOUT = 2880            # challenger is judged on the latest 2 unseen day
 LGBM_EMBARGO = 60
 
 # live generator (student) schedule
+HORIZON = 5                    # candles generated ahead at every minute
 STUDENT_ROWS = 2880            # distilled on the latest 2 days of teacher output
+STUDENT_ROWS_H = 10080         # candles 2..HORIZON learn from one week of real outcomes
 STUDENT_STEP = 300             # a new version can become effective every 5 minutes
 STUDENT_LEAD = 420             # ... and never sooner than 7 minutes after it was fitted
 STUDENT_WIN = 240              # candles the live generator looks back on

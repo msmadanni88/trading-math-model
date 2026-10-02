@@ -103,3 +103,15 @@ table.score { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8
   #chart { height: 56vh; }
   .toggle { margin-left: 0; }
 }
+
+.ramp { width: 28px; height: 8px; border-radius: 2px; background: linear-gradient(90deg, #e66767, #d9a13a, #199e70); display: inline-block; }
+h3 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 12px 0 0; }
+.facts.plain { border-top: 0; padding-top: 4px; margin-top: 8px; }
+.ahead { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.ahead li { display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: baseline; }
+.ahead .when { color: var(--text-3); }
+.ahead li.up .arrow { color: var(--up); } .ahead li.down .arrow { color: var(--down); }
+.ahead .muted { text-align: right; }
+.maincol { display: grid; gap: 16px; min-width: 0; }
+.under { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
+@media (max-width: 980px) { .under { grid-template-columns: minmax(0, 1fr); } }

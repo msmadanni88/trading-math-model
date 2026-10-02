@@ -14,13 +14,16 @@ what is stored.
 """
 import numpy as np
 
-from .config import STUDENT_WIN
+from .config import HORIZON, STUDENT_WIN
 
 LAM = 0.97
 FEATURES = ["bias", "z0", "z1", "z2", "m5", "m15", "m60", "lv", "rv5", "body", "wick_up", "wick_dn",
             "rng", "vr", "pos60", "min_sin", "min_cos", "top_hour", "top_quarter", "hr_sin", "hr_cos"]
 OUTPUTS = ["logit_p", "l_abs", "l_hi", "l_lo", "b05", "b25", "b75", "b95"]
+H_OUTPUTS = ["s_dir", "l_abs", "l_hi", "l_lo"]      # per extra horizon (candles 2..HORIZON)
 OFF = 0.01
+OFF_H = 0.1
+RIDGE_H = 30.0
 _W = LAM ** np.arange(STUDENT_WIN)          # weight 1 for the newest return
 RIDGE = 3.0
 
@@ -69,11 +72,27 @@ def teacher_targets(p_up, a, e_up, e_dn, q05, q25, q75, q95, sig):
                      q05 / sig, q25 / sig, q75 / sig, q95 / sig])
 
 
-def fit(X, Y):
+def fit(X, Y, ridge=RIDGE):
     """Ridge regression (bias not penalised). Returns W with shape (outputs, features)."""
-    reg = np.eye(X.shape[1]) * RIDGE
+    reg = np.eye(X.shape[1]) * ridge
     reg[0, 0] = 0.0
     return np.linalg.solve(X.T @ X + reg, X.T @ Y).T
+
+
+def outcome_targets(r, e_up, e_dn, sig):
+    """Targets for the candles further ahead, taken from what the market
+    actually printed (arrays). sig: volatility scale at the moment of forecast."""
+    q = lambda v: np.log(np.clip(v / sig, 0, 20) + OFF_H)
+    return np.column_stack([np.sign(r), q(np.abs(r)), q(e_up), q(e_dn)])
+
+
+def horizon_raw(Wh, f, sig):
+    """Unscaled forecast of one further-ahead candle: (direction, |body|,
+    reach up, reach down, P(up))."""
+    y = Wh @ f
+    p = min(max(0.5 + 0.5 * float(y[0]), 0.02), 0.98)
+    size = lambda v: sig * max(float(np.exp(v)) - OFF_H, 0.0)
+    return (1.0 if p >= 0.5 else -1.0, size(y[1]), size(y[2]), size(y[3]), p)
 
 
 def generate(W, f, sig):
@@ -88,3 +107,23 @@ def generate(W, f, sig):
     return {"p": float(p), "b": float(b),
             "u": max(e_up - max(b, 0.0), 0.0), "d": max(e_dn - max(-b, 0.0), 0.0),
             "q05": float(sig * y[4]), "q25": float(sig * y[5]), "q75": float(sig * y[6]), "q95": float(sig * y[7])}
+
+
+def generate_path(ver, f, sig):
+    """The next HORIZON candles. Candle 1 is the distilled full model; candles
+    2.. come from heads fitted on real outcomes, sized by multipliers the goal
+    tuner learned for that horizon. `lo` / `hi` bound the CLOSE of each candle
+    as a log-offset from the last real close (90% cone)."""
+    g = generate(ver["W"], f, sig)
+    g["lo"], g["hi"] = g["q05"], g["q95"]
+    path = [g]
+    if ver.get("H") is None:
+        return path
+    for j, Wh in enumerate(ver["H"]):
+        d, a, e_up, e_dn, p = horizon_raw(np.asarray(Wh), f, sig)
+        kb, kr = ver["scale"][j]
+        b = d * a * kb
+        c = ver["cone"][j]
+        path.append({"p": p, "b": float(b), "u": max(kr * e_up - max(b, 0.0), 0.0),
+                     "d": max(kr * e_dn - max(-b, 0.0), 0.0), "lo": c * g["q05"], "hi": c * g["q95"]})
+    return path

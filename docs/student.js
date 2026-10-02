@@ -1,7 +1,7 @@
 // Live generator - mirror of probcast/student.py (see that file for the idea).
 // tests/parity.mjs checks that both implementations return the same numbers.
 (function (root) {
-  const WIN = 240, LAM = 0.97, OFF = 0.01, GRAN = 60;
+  const WIN = 240, LAM = 0.97, OFF = 0.01, OFF_H = 0.1, GRAN = 60;
   const clip = (x, a) => Math.max(-a, Math.min(a, x));
 
   // candles: array of [ts, o, h, l, c, v] sorted by time. Fills missing minutes
@@ -75,6 +75,28 @@
     };
   }
 
+  // The next candles (see generate_path in probcast/student.py). ver: {W, H, scale, cone}.
+  // lo / hi bound the close of each candle as a log-offset from the last real close.
+  function generatePath(ver, f, sig) {
+    const g = generate(ver.W, f, sig);
+    g.lo = g.q05; g.hi = g.q95;
+    const path = [g];
+    if (!ver.H) return path;
+    ver.H.forEach((Wh, j) => {
+      const y = Wh.map((row) => row.reduce((s, w, i) => s + w * f[i], 0));
+      const p = Math.min(Math.max(0.5 + 0.5 * y[0], 0.02), 0.98);
+      const size = (v) => sig * Math.max(Math.exp(v) - OFF_H, 0);
+      const [kb, kr] = ver.scale[j];
+      const b = (p >= 0.5 ? 1 : -1) * size(y[1]) * kb;
+      const c = ver.cone[j];
+      path.push({
+        p, b, u: Math.max(kr * size(y[2]) - Math.max(b, 0), 0), d: Math.max(kr * size(y[3]) - Math.max(-b, 0), 0),
+        lo: c * g.q05, hi: c * g.q95,
+      });
+    });
+    return path;
+  }
+
   // parameter version that was already published when the minute `ts` started
   function versionAt(versions, ts) {
     let best = null;
@@ -95,7 +117,7 @@
     return { body, range, score: 0.5 * body + 0.5 * range };
   }
 
-  const api = { WIN, GRAN, regularize, compact, generate, versionAt, candleScore };
+  const api = { WIN, GRAN, regularize, compact, generate, generatePath, versionAt, candleScore };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Student = api;
 })(typeof self !== "undefined" ? self : this);

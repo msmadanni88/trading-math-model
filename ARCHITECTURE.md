@@ -57,7 +57,8 @@ minute, for free.
 | lgbm | `learners.py` | boosted trees, champion / challenger |
 | reach | `shape.py` | how far above and below the last close the candle reaches |
 | orchestrator | `engine.py` | runs the loop, weights the agents (Hedge), calibrates |
-| goal tuner | `engine.py` | turns forecasts into the candle that scores best |
+| goal tuner | `engine.py` | turns forecasts into the candle that scores best (one per horizon) |
+| outcome heads | `student.py` | candles 2-5 minutes ahead, learned from realised candles |
 | live generator | `student.py`, `docs/student.js` | real-time modelling in the browser |
 | goal keeper | `goal.py`, `report.py` | measures the goal, raises off-track alerts |
 

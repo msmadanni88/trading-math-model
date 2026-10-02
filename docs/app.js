@@ -38,7 +38,7 @@
     autoSize: true,
     layout: { background: { color: C.surface }, textColor: C.text, fontFamily: css("--mono"), fontSize: 11 },
     grid: { vertLines: { color: "rgba(255,255,255,0.03)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
-    rightPriceScale: { borderColor: C.line },
+    rightPriceScale: { borderColor: C.line, scaleMargins: { top: 0.05, bottom: 0.24 } },
     timeScale: { borderColor: C.line, timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 13 },
     crosshair: { mode: LC.CrosshairMode.Normal },
   });
@@ -54,6 +54,18 @@
     borderUpColor: C.gen, borderDownColor: C.gen, wickUpColor: C.gen, wickDownColor: C.gen,
     priceLineVisible: false, lastValueVisible: false,
   });
+
+  // match score of every generated candle, 1-100, drawn like a volume pane
+  const scoreS = chart.addHistogramSeries({ priceScaleId: "score", priceLineVisible: false, lastValueVisible: false,
+    autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),     // fixed 0-100 scale
+    priceFormat: { type: "custom", minMove: 1, formatter: (v) => v.toFixed(0) } });
+  chart.priceScale("score").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
+  const RAMP = [[230, 103, 103], [217, 161, 58], [25, 158, 112]];          // red -> amber -> green
+  function scoreColor(v) {                                                 // v in 0..100
+    const t = Math.max(0, Math.min(1, v / 100)) * 2, i = t >= 1 ? 1 : 0, f = t - i;
+    const c = RAMP[i].map((a, k) => Math.round(a + (RAMP[i + 1][k] - a) * f));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  }
 
   // ---------------------------------------------------------------- data helpers
   function rebuild() {
@@ -79,6 +91,29 @@
     g.eff = ver.eff; g.madeAt = old ? old.madeAt : Date.now() / 1000;
     live.set(forTs, g);
   }
+  // the candles after the one being formed: generated now, from the last closed candle
+  function futurePath() {
+    if (!closed.length || !formingOk()) return [];
+    const i = closed.length - 1, origin = closed[i][0], first = genBar(origin + GRAN);
+    if (!first) return [];
+    let path = null;
+    if (cloud && cloud.path && cloud.path.origin === origin) {
+      path = cloud.path.candles.map((c) => ({ b: c[0], u: c[1], d: c[2], p: c[3], lo: c[4], hi: c[5] }));
+    } else if (i >= S.WIN) {
+      const ver = S.versionAt(versions, origin + GRAN);
+      if (ver && ver.H) { const { f, sig } = S.compact(closed.slice(i - S.WIN, i + 1), origin + GRAN); path = S.generatePath(ver, f, sig); }
+    }
+    if (!path) return [];
+    const p0 = first.o, out = [];
+    let open = first.c;
+    for (let h = 1; h < path.length; h++) {
+      const g = path[h], c = open * Math.exp(g.b);
+      out.push({ ts: origin + (h + 1) * GRAN, o: open, c, h: Math.max(open, c) * Math.exp(g.u), l: Math.min(open, c) * Math.exp(-g.d),
+                 lo: p0 * Math.exp(g.lo), hi: p0 * Math.exp(g.hi), g, ahead: h + 1 });
+      open = c;
+    }
+    return out;
+  }
   // every minute the cloud has not stored yet (deterministic: same inputs, same candle)
   function ensureLive() {
     if (!closed.length) return;
@@ -101,28 +136,48 @@
   }
 
   // ---------------------------------------------------------------- rendering
+  let future = [];
   function renderAll() {
     const bars = closed.slice(-KEEP);
     const all = formingOk() ? bars.concat([forming]) : bars;
     realS.setData(all.map((k) => ({ time: toChart(k[0]), open: k[1], high: k[2], low: k[3], close: k[4] })));
-    const g = [], hi = [], lo = [];
+    const g = [], hi = [], lo = [], sc = [];
     for (const k of all) {
       const b = genBar(k[0]);
       if (!b) continue;
       g.push({ time: toChart(k[0]), open: b.o, high: b.h, low: b.l, close: b.c });
       hi.push({ time: toChart(k[0]), value: b.q95 });
       lo.push({ time: toChart(k[0]), value: b.q05 });
+      const s = scoreOf(k, k[0]), v = Math.max(1, Math.round(100 * s.score));
+      sc.push({ time: toChart(k[0]), value: v, color: scoreColor(v) });
     }
-    genS.setData($("t-gen").checked ? g : []);
-    hiS.setData($("t-band").checked ? hi : []);
-    loS.setData($("t-band").checked ? lo : []);
+    future = futurePath();
+    for (const b of future) {                              // candles that have not started yet
+      g.push({ time: toChart(b.ts), open: b.o, high: b.h, low: b.l, close: b.c });
+      hi.push({ time: toChart(b.ts), value: b.hi });
+      lo.push({ time: toChart(b.ts), value: b.lo });
+    }
+    genS.setData(g);
+    hiS.setData(hi);
+    loS.setData(lo);
+    scoreS.setData(sc);
+    applyToggles();
     renderNext();
     renderSession();
+  }
+  function applyToggles() {
+    realS.applyOptions({ visible: $("t-real").checked });
+    genS.applyOptions({ visible: $("t-gen").checked });
+    hiS.applyOptions({ visible: $("t-band").checked });
+    loS.applyOptions({ visible: $("t-band").checked });
+    scoreS.applyOptions({ visible: $("t-score").checked });
   }
   const formingOk = () => forming && (!closed.length || forming[0] > closed[closed.length - 1][0]);
   function renderForming() {
     if (!formingOk()) return;
     realS.update({ time: toChart(forming[0]), open: forming[1], high: forming[2], low: forming[3], close: forming[4] });
+    const fs = scoreOf(forming, forming[0]);
+    if (fs) { const v = Math.max(1, Math.round(100 * fs.score)); scoreS.update({ time: toChart(forming[0]), value: v, color: scoreColor(v) }); }
     const pe = $("price");
     pe.textContent = fmtP(forming[4]);
     const p = prevClose(forming[0]);
@@ -147,9 +202,19 @@
     kv(dl, "generated high / low", `${fmtP(b.h)} / ${fmtP(b.l)}`);
     kv(dl, "90% range for the close", `${fmtP(b.q05)} – ${fmtP(b.q95)}`);
     box.append(dir, dl);
+    if (future.length) {
+      const ul = el("ol", "ahead");
+      for (const f of future) {
+        const li = el("li", f.g.b >= 0 ? "up" : "down");
+        li.append(el("span", "when", fmtT(f.ts)), el("span", "arrow", f.g.b >= 0 ? "▲" : "▼"),
+          el("span", null, fmtP(f.c)), el("span", "muted", `${fmtP(f.lo)} – ${fmtP(f.hi)}`));
+        ul.append(li);
+      }
+      box.append(el("p", "muted small", "then, generated now for the minutes after — close, and 90% range:"), ul);
+    }
     const s = scoreOf(forming, forming[0]);
     const ls = el("div", "livescore");
-    ls.append("match so far this minute: ", el("b", null, s ? s.score.toFixed(2) : "–"),
+    ls.append("match so far this minute: ", el("b", null, s ? Math.max(1, Math.round(100 * s.score)) + "/100" : "–"),
       official.has(forming[0]) ? "  · stored by the cloud" : "  · generated in your browser at " + fmtT(b.g.madeAt || forming[0]));
     box.append(ls);
   }
@@ -163,7 +228,7 @@
       if (k[4] !== p) { dirN++; if ((g.b > 0) === (k[4] > p)) dirOk++; }
     }
     $("chartnote").textContent = n
-      ? `On this chart: ${n} generated candles, average match ${(sum / n).toFixed(3)}, colour right ${(100 * dirOk / Math.max(dirN, 1)).toFixed(1)}%. Hover a candle for its numbers.`
+      ? `On this chart: ${n} generated candles, average match ${(100 * sum / n).toFixed(0)}/100, colour right ${(100 * dirOk / Math.max(dirN, 1)).toFixed(1)}%. Bars at the bottom: match of each candle, 1–100. Hover a candle for its numbers.`
       : "Generated candles appear here as soon as the model's parameters and 4 hours of candles are loaded.";
   }
   function renderCloud() {
@@ -178,8 +243,9 @@
       if (!s) continue;
       const tr = el("tr");
       const typ = w.baseline.typical.score, rep = w.baseline.repeat.score;
-      tr.append(el("td", null, name), el("td", "model" + (s.score < typ ? " behind" : ""), s.score.toFixed(3)),
-        el("td", null, typ.toFixed(3)), el("td", null, rep.toFixed(3)),
+      const pc = (x) => (100 * x).toFixed(1);
+      tr.append(el("td", null, name), el("td", "model" + (s.score < typ ? " behind" : ""), pc(s.score)),
+        el("td", null, pc(typ)), el("td", null, pc(rep)),
         el("td", null, s.dir_acc == null ? "–" : (s.dir_acc * 100).toFixed(1) + "%"));
       tb.append(tr);
     }
@@ -187,6 +253,24 @@
     $("scorenote").textContent = d
       ? `Last 24h: the 90% range held ${(d.cov90 * 100).toFixed(1)}% of closes, the 50% range ${(d.cov50 * 100).toFixed(1)}%. "typical" and "repeat" are naive generators the model has to beat.`
       : "";
+    const ab = $("ahead").tBodies[0];
+    ab.replaceChildren();
+    for (const [h, a] of Object.entries((d && d.ahead) || {})) {
+      const tr = el("tr");
+      tr.append(el("td", null, h === "1" ? "1 minute" : h + " minutes"), el("td", "model", (100 * a.score).toFixed(1)),
+        el("td", null, a.dir_acc == null ? "–" : (a.dir_acc * 100).toFixed(1) + "%"),
+        el("td", null, h === "1" ? (d.cov90 * 100).toFixed(1) + "%" : a.cone90 == null ? "–" : (a.cone90 * 100).toFixed(1) + "%"));
+      ab.append(tr);
+    }
+    const lf = $("learning");
+    lf.replaceChildren();
+    const L = cloud.learning;
+    if (L) {
+      kv(lf, "candles learned from", L.candles_learned.toLocaleString("en-US"));
+      kv(lf, "sizing learned from the score", `body ×${L.body_scale}, reach ×${L.reach_scale}`);
+      if (L.last_contest) kv(lf, "last tree-model contest", L.last_contest.promoted ? "new model won" : "old model kept");
+      kv(lf, "generator versions published", String(L.versions_published));
+    }
     const wbox = $("weights");
     wbox.replaceChildren();
     const ws = Object.entries((cloud.next && cloud.next.weights) || {}).sort((a, b) => b[1] - a[1]);
@@ -330,6 +414,15 @@
     const box = $("readout");
     box.replaceChildren();
     const k = forming && forming[0] === ts ? forming : (idx.has(ts) ? closed[idx.get(ts)] : null);
+    const fut = future.find((f) => f.ts === ts);
+    if (!k && fut) {
+      box.append(el("span", "tag", fmtT(ts) + " generated"));
+      const v = el("span");
+      v.append((fut.c >= fut.o ? "▲ " : "▼ "), "O ", el("b", null, fmtP(fut.o)), "  H ", el("b", null, fmtP(fut.h)), "  L ", el("b", null, fmtP(fut.l)),
+        "  C ", el("b", null, fmtP(fut.c)), `   ${fut.ahead} minutes ahead · this candle has not started yet`);
+      box.append(v);
+      return;
+    }
     if (!k) return;
     const line = (tag, o, h, l, c, extra) => {
       box.append(el("span", "tag", tag));
@@ -339,7 +432,7 @@
     };
     line(fmtT(ts) + " real", k[1], k[2], k[3], k[4]);
     const b = genBar(ts), s = scoreOf(k, ts);
-    if (b) line("generated", b.o, b.h, b.l, b.c, s ? `   match ${s.score.toFixed(2)} (body ${s.body.toFixed(2)}, range ${s.range.toFixed(2)})` : "");
+    if (b) line("generated", b.o, b.h, b.l, b.c, s ? `   match ${Math.max(1, Math.round(100 * s.score))}/100 (body ${Math.round(100 * s.body)}, range ${Math.round(100 * s.range)})` : "");
   }
   let hovering = false;
   chart.subscribeCrosshairMove((p) => {
@@ -347,8 +440,7 @@
     if (hovering) readout(fromChart(p.time));
     else if (forming) readout(forming[0]);
   });
-  $("t-gen").addEventListener("change", renderAll);
-  $("t-band").addEventListener("change", renderAll);
+  for (const id of ["t-real", "t-gen", "t-band", "t-score"]) $(id).addEventListener("change", applyToggles);
 
   // ---------------------------------------------------------------- loops
   setInterval(() => {                                          // once a second, exactly like the market clock

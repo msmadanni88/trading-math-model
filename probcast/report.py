@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from . import goal, store, student
-from .config import GRAN, PRODUCT
+from .config import GRAN, HORIZON, PRODUCT
 from .core import QUANTILES
 
 TAUS = [f"{int(round(t * 100)):02d}" for t in QUANTILES]
@@ -33,6 +33,16 @@ def window_metrics(d, agents):
     m["student"] = goal.summarize(d, "g")           # what the site shows
     m["teacher"] = goal.summarize(d, "t")           # full cloud model
     m["baseline"] = goal.baselines(d)
+    # candles generated 2..HORIZON minutes ahead (1 = the row above)
+    m["ahead"] = {"1": {"score": m["student"]["score"], "dir_acc": m["student"]["dir_acc"]}} if m["student"] else {}
+    for hz in range(2, HORIZON + 1):
+        if f"g{hz}_b" not in d:
+            continue
+        sm = goal.summarize(d, f"g{hz}")
+        if sm:
+            inside = d[f"c{hz}_in"].dropna()
+            m["ahead"][str(hz)] = {"score": sm["score"], "dir_acc": sm["dir_acc"],
+                                   "cone90": float(inside.mean()) if len(inside) else None}
     # --- probability quality -------------------------------------------------
     m["loss_cal"] = float(d["loss_cal"].mean())
     m["loss_raw"] = float(d["loss_ens"].mean())
@@ -89,7 +99,12 @@ def build(fc, eng, candles, status, state_dir):
         rep["hmm"] = {"state_sd_bp": [_r(s, 2) for s in hmm.m.sd], "state_prob": [_r(a, 3) for a in hmm.m.alpha]}
     rep["calibration_offsets_sigma"] = {t: _r(v) for t, v in zip(TAUS, eng.calib.theta)}
     kb, kr = eng.tuner.scales()
-    rep["goal_tuner"] = {"body_scale": kb, "reach_scale": kr}
+    rep["goal_tuner"] = {"body_scale": kb, "reach_scale": kr,
+                         "ahead": [[float(x) for x in t.scales()] for t in eng.tuners_h],
+                         "cone_width": [round(float(c), 3) for c in eng.cone]}
+    last_contest = next((e["lgbm"] for e in reversed(eng.retrain_log) if "lgbm" in e), None)
+    rep["learning"] = {"candles_learned": int(eng.n), "body_scale": kb, "reach_scale": kr,
+                       "last_contest": last_contest, "versions_published": len(eng.versions)}
     rep["retrain_log"] = eng.retrain_log[-8:]
     if eng.versions:
         v = eng.versions[-1]
@@ -149,22 +164,32 @@ def publish(fc, eng, candles, rep, state_dir, n=720):
     if P is not None and P.get("gen"):
         gg = P["gen"]
         gen.append([int(P["for_ts"])] + [float(f"{gg[k]:.6g}") for k in ("b", "u", "d", "p", "q05", "q25", "q75", "q95")])
+    path = None
+    if P is not None and P.get("path"):
+        path = {"origin": int(P["for_ts"]) - GRAN,
+                "candles": [[float(f"{g[k]:.6g}") for k in ("b", "u", "d", "p", "lo", "hi")] for g in P["path"]]}
     slim = {}
     for k, m in rep["windows"].items():
         if m.get("n", 0) < 30:
             continue
         slim[k] = {"n": m["n"], "student": m["student"], "teacher": m["teacher"], "baseline": m["baseline"],
+                   "ahead": m.get("ahead"),
                    "cov90": _r(m["cov90"]), "cov50": _r(m["cov50"]), "skill": _r(m.get("skill_vs_empirical")),
                    "brier": _r(m.get("brier")), "vol_corr": _r(m.get("vol_corr"))}
     latest = {"v": 1, "product": PRODUCT, "gran": GRAN, "generated": int(rep["status"]["run_ts"]),
               "last_ts": int(candles["ts"].iloc[-1]), "candles": cand,
               "gen_cols": ["ts", "b", "u", "d", "p", "q05", "q25", "q75", "q95"], "gen": gen,
+              "path_cols": ["b", "u", "d", "p", "lo", "hi"], "path": path, "horizon": HORIZON,
+              "learning": rep.get("learning"),
               "windows": slim, "next": rep.get("next"), "hmm": rep.get("hmm"), "student": rep.get("student"),
               "alerts": rep["alerts"], "retrain_log": rep["retrain_log"][-3:]}
     store.write_json(os.path.join(state_dir, "live", "latest.json"), latest)
     params = {"v": 1, "win": student.STUDENT_WIN, "lam": student.LAM, "features": student.FEATURES,
               "outputs": student.OUTPUTS,
-              "versions": [{"eff": v["eff"], "W": v["W"].tolist()} for v in eng.versions[-12:]]}
+              "h_outputs": student.H_OUTPUTS,
+              "versions": [{"eff": v["eff"], "W": v["W"].tolist(),
+                            "H": None if v.get("H") is None else np.asarray(v["H"]).tolist(),
+                            "scale": v.get("scale"), "cone": v.get("cone")} for v in eng.versions[-10:]]}
     store.write_json(os.path.join(state_dir, "live", "params.json"), params)
 
 
@@ -186,6 +211,12 @@ def markdown(rep, agents):
         L.append(f"| {k} | {m['n']} | {f3(s.get('score'))} | {f3(t.get('score'))} | {f3(b['repeat']['score'])} "
                  f"| {f3(b['typical']['score'])} | {f3(s.get('dir_acc'))} | {f3(s.get('body_iou'))} "
                  f"| {f3(s.get('range_iou'))} | {f3(s.get('body_size_ratio'))} |")
+    L += ["", "## Candles generated further ahead (score / colour right / 90% cone held the close)", ""]
+    for k, m in rep["windows"].items():
+        if m.get("n", 0) < 30 or not m.get("ahead"):
+            continue
+        L.append(f"- {k}: " + "; ".join(
+            f"{h} min ahead {f3(a['score'])} / {f3(a.get('dir_acc'))} / {f3(a.get('cone90'))}" for h, a in m["ahead"].items()))
     L += ["", "## Probability quality (full model)", "",
           "| window | pinball x1e5 | skill vs empirical | cov 90% | cov 50% | Brier | dir acc | vol corr |",
           "|---|---|---|---|---|---|---|---|"]

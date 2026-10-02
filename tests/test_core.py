@@ -170,28 +170,29 @@ def test_student_fit_recovers_linear_teacher_and_generates_valid_candle():
 
 def test_engine_resume_equals_single_run(tmp_path):
     """Incremental running must give the same forecasts as one pass."""
-    df = regularize(synth(2600, seed=9))
+    df = regularize(synth(4600, seed=9))
     e1 = Engine()
     a = pd.DataFrame(run_engine(e1, df, 0))
     e2 = Engine()
-    rows = run_engine(e2, df.iloc[:2000], 0)
+    rows = run_engine(e2, df.iloc[:4000], 0)
     p = tmp_path / "s.pkl.gz"
     with gzip.open(p, "wb") as f:
         pickle.dump(e2, f)
     with gzip.open(p, "rb") as f:
         e3 = pickle.load(f)
-    for k in range(2000, 2600, 7):                 # arrive in small batches
-        rows += run_engine(e3, df.iloc[:min(k + 7, 2600)], k)
+    for k in range(4000, 4600, 7):                 # arrive in small batches
+        rows += run_engine(e3, df.iloc[:min(k + 7, 4600)], k)
     b = pd.DataFrame(rows)
     assert len(a) == len(b) and (a["ts"] == b["ts"]).all()
-    cols = [c for c in a.columns if c.startswith(("cal_", "g_", "t_"))] + ["p_up"]
+    cols = [c for c in a.columns if c.startswith(("cal_", "g", "t_", "c"))] + ["p_up"]
     assert a["g_b"].notna().sum() > 300
+    assert a["g5_b"].notna().sum() > 300 and a["c5_in"].notna().sum() > 300     # candles 2..5 ahead exist
     assert np.allclose(a[cols].to_numpy(), b[cols].to_numpy(), rtol=1e-5, atol=1e-9, equal_nan=True)
 
 
 def test_forecast_never_uses_its_own_outcome():
     """Everything stored for candle t must be identical whatever candle t is."""
-    rows = synth(1900, seed=4)
+    rows = synth(4300, seed=4)
     alt = [list(r) for r in rows]
     alt[-1][1:5] = [x * 1.003 for x in alt[-1][1:5]]         # change only the last candle
     outs = []
@@ -200,8 +201,9 @@ def test_forecast_never_uses_its_own_outcome():
         outs.append(fc[-1])
     assert outs[0]["ts"] == outs[1]["ts"] and outs[0]["y"] != outs[1]["y"]
     assert np.isfinite(outs[0]["g_b"])
+    assert np.isfinite(outs[0]["g3_b"])
     for k in outs[0]:
-        if k.startswith(("cal_", "g_", "t_")) or k in ("p_up", "sigma"):
+        if k.startswith(("cal_", "g", "t_")) or k in ("p_up", "sigma"):       # includes g2_..g5_
             assert outs[0][k] == outs[1][k], k
 
 
@@ -235,14 +237,17 @@ def test_write_js_parity_fixture(tmp_path):
     df = regularize(raw)
     C = df[["open", "high", "low", "close", "volume"]].to_numpy()
     W = rng.normal(size=(len(student.OUTPUTS), len(student.FEATURES))) * 0.2
+    H = rng.normal(size=(4, len(student.H_OUTPUTS), len(student.FEATURES))) * 0.1
+    ver = {"W": W, "H": H, "scale": [[1.1, 1.4], [1.0, 1.3], [0.9, 1.2], [1.2, 1.6]], "cone": [1.4, 1.7, 2.0, 2.3]}
     cases = []
     for end in (300, 455, 640, len(df) - 1):
         nts = int(df["ts"].iloc[end]) + GRAN
         f, sig = student.compact(C[end - STUDENT_WIN:end + 1], nts)
         cases.append({"last_ts": int(df["ts"].iloc[end]), "f": f.tolist(), "sig": sig,
-                      "gen": student.generate(W, f, sig)})
+                      "gen": student.generate(W, f, sig), "path": student.generate_path(ver, f, sig)})
     sc = goal.candle_score(0.0011, 0.0004, 0.0002, 0.0001, -0.0007, 0.0009, -0.0012)
     out = {"raw": raw, "n_regular": len(df), "W": W.tolist(), "cases": cases,
+           "ver": {"W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"]},
            "score": [float(x) for x in sc]}
     path = os.environ.get("PARITY_FIXTURE", str(tmp_path / "parity.json"))
     with open(path, "w") as fh:

@@ -15,13 +15,13 @@ import numpy as np
 from . import student
 from .agents.learners import Lgbm
 from .agents.registry import forecast_agents, shape_agents, signal_agents
-from .config import (GRAN, LGBM_EVERY, RETRAIN_EVERY, STUDENT_LEAD, STUDENT_ROWS,
-                     STUDENT_STEP, STUDENT_WIN, TRAIN_WINDOW)
+from .config import (GRAN, HORIZON, LGBM_EVERY, RETRAIN_EVERY, STUDENT_LEAD, STUDENT_ROWS,
+                     STUDENT_ROWS_H, STUDENT_STEP, STUDENT_WIN, TRAIN_WINDOW)
 from .core import BOCPD, QUANTILES, pinball
 from .features import feature_names
 from .goal import candle_score
 
-STATE_VERSION = 2            # bump when a change makes old saved state invalid
+STATE_VERSION = 3            # bump when a change makes old saved state invalid
 EXTRA = ["cp_prob", "log_run", "bocpd_lsd"]
 BP = 1e4
 NQ = len(QUANTILES)
@@ -192,10 +192,18 @@ class Engine:
         # student (live generator)
         self.candles = Hist(STUDENT_WIN + 1, (5,))
         ns, no = len(student.FEATURES), len(student.OUTPUTS)
-        self.sX = Hist(STUDENT_ROWS, (ns,))
-        self.sY = Hist(STUDENT_ROWS, (no,))
-        self.sT = Hist(STUDENT_ROWS, (), np.int64)
-        self.versions = []                   # [{"eff": ts, "W": ndarray, "n": rows, "r2": [...]}]
+        self.sX = Hist(STUDENT_ROWS_H, (ns,))
+        self.sY = Hist(STUDENT_ROWS_H, (no,))
+        self.sT = Hist(STUDENT_ROWS_H, (), np.int64)
+        self.sS = Hist(STUDENT_ROWS_H)                    # volatility scale of each row
+        self.oT = Hist(STUDENT_ROWS_H + 64, (), np.int64)  # what every candle actually did:
+        self.oY = Hist(STUDENT_ROWS_H + 64, (3,))          #   return, reach up, reach down
+        self.versions = []                   # [{"eff", "W", "H", "scale", "cone", "n", "r2"}]
+        # candles 2..HORIZON: one goal tuner and one cone width per horizon
+        self.tuners_h = [GoalTuner() for _ in range(HORIZON - 1)]
+        self.cone = [float(np.sqrt(h)) for h in range(2, HORIZON + 1)]
+        self.multi = {}                      # target ts -> {h: what was generated h candles ahead}
+        self.cum = 0.0                       # cumulative log return (to score the cones)
         self.simulate_publish = True         # replay mode: emulate a cloud run every STUDENT_STEP
 
     # ------------------------------------------------------------------
@@ -214,30 +222,49 @@ class Engine:
             self.retrain_log = self.retrain_log[-60:]
 
     def fit_student(self, eff, cutoff_ts):
-        """Fit a new live-generator version on teacher rows with target
-        candle <= cutoff_ts; it becomes effective at `eff`."""
+        """Fit a new live-generator version using only what was known at
+        `cutoff_ts`; it becomes effective at `eff`."""
+        if self.versions and self.versions[-1]["eff"] >= eff:
+            return None
         T = self.sT.view()
         ok = T <= cutoff_ts
         if ok.sum() < 600:
             return None
-        X, Y = self.sX.view()[ok], self.sY.view()[ok]
-        # rounded so the published numbers are exactly the ones the cloud uses
-        W = np.array([[float(f"{x:.9g}") for x in row] for row in student.fit(X, Y)])
+        rnd = lambda A: np.array([float(f"{x:.9g}") for x in np.ravel(A)]).reshape(np.shape(A))
+        # candle 1: distilled from the full model (latest STUDENT_ROWS rows)
+        X, Y = self.sX.view()[ok][-STUDENT_ROWS:], self.sY.view()[ok][-STUDENT_ROWS:]
+        W = rnd(student.fit(X, Y))            # rounded: the published numbers ARE the ones used
         res = Y - X @ W.T
         r2 = 1 - res.var(0) / np.maximum(Y.var(0), 1e-12)
-        if self.versions and self.versions[-1]["eff"] >= eff:
-            return None
-        self.versions.append({"eff": int(eff), "W": W, "n": int(ok.sum()), "r2": [round(float(x), 3) for x in r2]})
+        # candles 2..HORIZON: learned from what the market really did
+        H, oT, oY = [], self.oT.view(), self.oY.view()
+        Xa, Sa = self.sX.view(), self.sS.view()
+        for h in range(2, HORIZON + 1):
+            tt = T + (h - 1) * GRAN
+            idx = np.minimum(np.searchsorted(oT, tt), len(oT) - 1) if len(oT) else np.zeros(len(tt), int)
+            use = (oT[idx] == tt) & (tt <= cutoff_ts) if len(oT) else np.zeros(len(tt), bool)
+            if use.sum() < 1500:
+                H = None
+                break
+            o = oY[idx[use]]
+            H.append(student.fit(Xa[use], student.outcome_targets(o[:, 0], o[:, 1], o[:, 2], Sa[use]), student.RIDGE_H))
+        self.versions.append({
+            "eff": int(eff), "W": W, "H": None if H is None else rnd(np.array(H)),
+            "scale": [[float(x) for x in t.scales()] for t in self.tuners_h],
+            "cone": [float(f"{c:.6g}") for c in self.cone],
+            "n": int(len(X)), "r2": [round(float(x), 3) for x in r2]})
         self.versions = self.versions[-60:]
         return self.versions[-1]
 
     def merge_versions(self, published):
-        """published: [{"eff": ts, "W": [[...]]}] as stored on the state branch
-        (the source of truth: a restored engine may be older than the last run)."""
+        """published: versions as stored on the state branch (the source of
+        truth: a restored engine may be older than the last run)."""
         have = {v["eff"] for v in self.versions}
         for v in published:
             if v["eff"] not in have:
-                self.versions.append({"eff": int(v["eff"]), "W": np.array(v["W"], float), "n": 0, "r2": []})
+                self.versions.append({"eff": int(v["eff"]), "W": np.array(v["W"], float),
+                                      "H": None if v.get("H") is None else np.array(v["H"], float),
+                                      "scale": v.get("scale"), "cone": v.get("cone"), "n": 0, "r2": []})
         self.versions = sorted(self.versions, key=lambda v: v["eff"])[-60:]
 
     def version_at(self, ts):
@@ -260,6 +287,9 @@ class Engine:
             return None
         r = float(np.log(c / pc))
         ao, ah, al = float(np.log(o / pc)), float(np.log(h / pc)), float(np.log(l / pc))
+        self.cum += r
+        self.oT.add(int(ts))
+        self.oY.add([r, max(ah, 0.0), max(-al, 0.0)])
         nxt = int(ts) + GRAN
         minute, hour = (nxt // 60) % 60, (nxt // 3600) % 24
         cal = (float(np.sin(2 * np.pi * hour / 24)), float(np.cos(2 * np.pi * hour / 24)),
@@ -290,6 +320,20 @@ class Engine:
             self.calib.update(P["cal"], r)
             if P["base"] is not None:
                 self.tuner.update(P["base"], ao, r, ah, al)
+            # candles that were generated 2..HORIZON minutes before this one
+            ahead = self.multi.pop(int(ts), {})
+            for hz in range(2, HORIZON + 1):
+                e = ahead.get(hz)
+                if e is None:
+                    row.update({f"g{hz}_b": np.nan, f"g{hz}_u": np.nan, f"g{hz}_d": np.nan, f"c{hz}_in": np.nan})
+                    continue
+                inside = e["lo"] <= self.cum - e["cum0"] <= e["hi"]
+                row.update({f"g{hz}_b": e["b"], f"g{hz}_u": e["u"], f"g{hz}_d": e["d"], f"c{hz}_in": float(inside)})
+                # feedback: the goal tuner and the cone width of that horizon learn from the result
+                self.tuners_h[hz - 2].update(e["base"], ao, r, ah, al)
+                self.cone[hz - 2] *= float(np.exp(0.02 * ((not inside) - 0.10)))
+        for k in [k for k in self.multi if k <= int(ts)]:
+            del self.multi[k]
         if P is not None and P["x"] is not None and P["sigma"]:
             self.X.add(P["x"])
             self.z.add(np.clip(r / P["sigma"], -10, 10))
@@ -330,7 +374,7 @@ class Engine:
             if q is not None and np.all(np.isfinite(q)):
                 exp_q[e.name] = np.asarray(q, float)
         P = {"x": x, "sigma": sigma, "exp_q": exp_q, "w": {}, "ens": None, "cal": None, "p_up": float("nan"),
-             "cp_prob": cp, "exp_run": er, "for_ts": nxt, "teacher_gen": None, "gen": None, "base": None}
+             "cp_prob": cp, "exp_run": er, "for_ts": nxt, "teacher_gen": None, "gen": None, "base": None, "path": None}
         if exp_q and sigma:
             w = self.hedge.weights(list(exp_q))
             ens = np.sort(sum(w[n] * exp_q[n] for n in exp_q))
@@ -347,10 +391,17 @@ class Engine:
                 self.sX.add(f)
                 self.sY.add(student.teacher_targets(P["p_up"], a, e_up, e_dn, cal[0], cal[2], cal[6], cal[8], sig))
                 self.sT.add(nxt)
+                self.sS.add(sig)
                 if self.simulate_publish and nxt % STUDENT_STEP == 0:
                     self.fit_student(nxt, nxt - STUDENT_LEAD)
                 ver = self.version_at(nxt)
                 if ver is not None:
-                    P["gen"] = dict(student.generate(ver["W"], f, sig), eff=ver["eff"])
+                    path = student.generate_path(ver, f, sig)
+                    P["gen"] = dict(path[0], eff=ver["eff"])
+                    for j, g in enumerate(path[1:]):
+                        base = student.horizon_raw(ver["H"][j], f, sig)[:4]
+                        self.multi.setdefault(nxt + (j + 1) * GRAN, {})[j + 2] = dict(
+                            b=g["b"], u=g["u"], d=g["d"], lo=g["lo"], hi=g["hi"], base=base, cum0=self.cum)
+                    P["path"] = path
         self.pending = P
         return row

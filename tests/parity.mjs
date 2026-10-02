@@ -18,6 +18,9 @@ for (const c of fx.cases) {
   f.forEach((x, i) => check(close(x, c.f[i]), `feature ${i}: ${x} vs ${c.f[i]}`));
   const g = S.generate(fx.W, f, sig);
   for (const k of Object.keys(c.gen)) check(close(g[k], c.gen[k]), `gen.${k}: ${g[k]} vs ${c.gen[k]}`);
+  const path = S.generatePath(fx.ver, f, sig);
+  check(path.length === c.path.length && path.length === 5, `path length ${path.length}`);
+  path.forEach((q, h) => { for (const k of Object.keys(c.path[h])) check(close(q[k], c.path[h][k]), `path[${h}].${k}: ${q[k]} vs ${c.path[h][k]}`); });
 }
 const s = S.candleScore({ b: 0.0011, u: 0.0004, d: 0.0002 }, 0.0001, -0.0007, 0.0009, -0.0012);
 check(close(s.body, fx.score[0]) && close(s.range, fx.score[1]) && close(s.score, fx.score[2]), "candle score");

@@ -27,6 +27,7 @@
 </header>
 
 <main class="layout">
+  <div class="maincol">
   <section class="chartcard">
     <div class="legend" aria-label="Legend">
       <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-up"/><rect x="3" y="5" width="8" height="8" class="f-up"/></svg>real, up</span>
@@ -34,13 +35,33 @@
       <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-gen"/><line x1="7" y1="13" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="o-gen"/></svg>generated, up (hollow)</span>
       <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="f-gen"/></svg>generated, down (filled)</span>
       <span class="key"><svg width="20" height="18" aria-hidden="true"><line x1="1" y1="9" x2="19" y2="9" class="s-band"/></svg>90% range</span>
+      <span class="key"><span class="ramp" aria-hidden="true"></span>match 1–100 (bars)</span>
+      <label class="toggle"><input type="checkbox" id="t-real" checked> real</label>
       <label class="toggle"><input type="checkbox" id="t-gen" checked> generated</label>
       <label class="toggle"><input type="checkbox" id="t-band" checked> range</label>
+      <label class="toggle"><input type="checkbox" id="t-score" checked> match</label>
     </div>
     <div class="readout" id="readout" aria-live="off"></div>
     <div id="chart" role="img" aria-label="Candlestick chart: real one-minute candles with the model's generated candles overlaid"></div>
     <p class="note" id="chartnote"></p>
   </section>
+  <div class="under">
+    <section class="card">
+      <h2>Goal: match the real candle</h2>
+      <p class="muted small">Match 100 = identical candle. Half of it is body overlap (zero when the colour is wrong), half is high–low range overlap.</p>
+      <table class="score" id="score"><thead><tr><th>window</th><th>model</th><th>typical</th><th>repeat</th><th>colour right</th></tr></thead><tbody></tbody></table>
+      <p class="muted small" id="scorenote"></p>
+      <h3>Generated further ahead, last 24h</h3>
+      <table class="score" id="ahead"><thead><tr><th>ahead</th><th>match</th><th>colour right</th><th>90% range held</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section class="card">
+      <h2>Learning</h2>
+      <p class="muted small">After every real candle the result is fed back: agents are re-weighted, ranges re-calibrated, sizes re-tuned against the goal.</p>
+      <dl class="facts plain" id="learning"></dl>
+    </section>
+  </div>
+  </div>
 
   <aside class="side">
     <section class="card next">
@@ -49,13 +70,6 @@
       <div class="nextgrid" id="next">
         <p class="muted">waiting for the model…</p>
       </div>
-    </section>
-
-    <section class="card">
-      <h2>Goal: match the real candle</h2>
-      <p class="muted small">Score 1.00 = identical candle. Half of it is body overlap (zero when the colour is wrong), half is high–low range overlap.</p>
-      <table class="score" id="score"><thead><tr><th>window</th><th>model</th><th>typical</th><th>repeat</th><th>colour right</th></tr></thead><tbody></tbody></table>
-      <p class="muted small" id="scorenote"></p>
     </section>
 
     <section class="card">
