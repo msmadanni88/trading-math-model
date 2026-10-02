@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+    paths: ["probcast/**", "tests/**", "docs/student.js", "requirements.txt"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -q -r requirements.txt pytest
+      - run: PARITY_FIXTURE=parity.json python -m pytest -q tests
+      - name: Browser generator equals cloud generator
+        run: node tests/parity.mjs parity.json
