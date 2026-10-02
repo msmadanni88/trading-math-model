@@ -1,0 +1,221 @@
+"""Evaluation of the stored forecasts and everything the site and the weekly
+review read: reports/latest.md|json, live/latest.json, live/params.json."""
+import json
+import os
+from datetime import datetime, timezone
+
+import numpy as np
+
+from . import goal, store, student
+from .config import GRAN, PRODUCT
+from .core import QUANTILES
+
+TAUS = [f"{int(round(t * 100)):02d}" for t in QUANTILES]
+WINDOWS = {"1h": 60, "6h": 360, "24h": 1440, "7d": 10080, "30d": 43200}
+
+
+def _iso(ts):
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _r(x, k=4):
+    return None if x is None or not np.isfinite(x) else round(float(x), k)
+
+
+def window_metrics(d, agents):
+    d = d[d["cal_50"].notna()]
+    n = len(d)
+    if n < 30:
+        return {"n": int(n)}
+    y = d["y"].to_numpy()
+    m = {"n": int(n)}
+    # --- the goal: how close are the generated candles ---------------------
+    m["student"] = goal.summarize(d, "g")           # what the site shows
+    m["teacher"] = goal.summarize(d, "t")           # full cloud model
+    m["baseline"] = goal.baselines(d)
+    # --- probability quality -------------------------------------------------
+    m["loss_cal"] = float(d["loss_cal"].mean())
+    m["loss_raw"] = float(d["loss_ens"].mean())
+    m["agents"] = {}
+    for e in agents:
+        col = d[f"loss_{e}"]
+        ok = col.notna()
+        if ok.sum() >= 30:
+            m["agents"][e] = float(col[ok].mean())
+    if "empirical" in m["agents"]:
+        ok = d["loss_empirical"].notna()
+        m["skill_vs_empirical"] = float(1 - d.loc[ok, "loss_cal"].mean() / d.loc[ok, "loss_empirical"].mean())
+    m["cov90"] = float(((y >= d["cal_05"]) & (y <= d["cal_95"])).mean())
+    m["cov50"] = float(((y >= d["cal_25"]) & (y <= d["cal_75"])).mean())
+    g = d[d["g_05"].notna()]
+    if len(g) >= 30:
+        yg = g["y"].to_numpy()
+        m["cov90_site"] = float(((yg >= g["g_05"]) & (yg <= g["g_95"])).mean())
+        m["cov50_site"] = float(((yg >= g["g_25"]) & (yg <= g["g_75"])).mean())
+    nz = y != 0
+    up = (y > 0).astype(float)
+    p = d["p_up"].to_numpy()
+    if nz.sum() >= 30:
+        m["brier"] = float(np.mean((p[nz] - up[nz]) ** 2))
+        m["dir_acc_teacher"] = float(np.mean((p[nz] > 0.5) == (up[nz] > 0.5)))
+    width = (d["cal_95"] - d["cal_05"]).to_numpy()
+    rng = (d["ah"] - d["al"]).to_numpy()
+    if np.std(width) > 0 and np.std(rng) > 0:
+        m["vol_corr"] = float(np.corrcoef(width, rng)[0, 1])
+    return m
+
+
+def build(fc, eng, candles, status, state_dir):
+    agents = eng.names
+    now_ts = int(status["run_ts"])
+    last = int(candles["ts"].iloc[-1])
+    rep = {"generated": _iso(now_ts), "product": PRODUCT, "gran": GRAN,
+           "last_candle_close": _iso(last + GRAN),
+           "staleness_min": round((now_ts - (last + GRAN)) / 60, 1),
+           "n_candles_loaded": int(len(candles)),
+           "filled_last_24h": int(candles["filled"].iloc[-1440:].sum()),
+           "state_version": eng.version, "status": status}
+    rep["windows"] = {k: window_metrics(fc.iloc[-n:], agents) for k, n in WINDOWS.items()} if len(fc) else {}
+
+    P = eng.pending
+    if P is not None and P.get("cal") is not None:
+        c = float(candles["close"].iloc[-1])
+        rep["next"] = {"for_candle": _iso(P["for_ts"]), "last_close": c, "p_up": _r(P["p_up"]),
+                       "return_quantiles_bp": {t: _r(q * 1e4, 3) for t, q in zip(TAUS, P["cal"])},
+                       "weights": {k: _r(v) for k, v in P["w"].items()},
+                       "changepoint_prob": _r(P["cp_prob"]), "regime_age_min": _r(P["exp_run"], 1)}
+    hmm = next((e for e in eng.agents if e.name == "hmm"), None)
+    if hmm is not None and hmm.m.A is not None:
+        rep["hmm"] = {"state_sd_bp": [_r(s, 2) for s in hmm.m.sd], "state_prob": [_r(a, 3) for a in hmm.m.alpha]}
+    rep["calibration_offsets_sigma"] = {t: _r(v) for t, v in zip(TAUS, eng.calib.theta)}
+    kb, kr = eng.tuner.scales()
+    rep["goal_tuner"] = {"body_scale": kb, "reach_scale": kr}
+    rep["retrain_log"] = eng.retrain_log[-8:]
+    if eng.versions:
+        v = eng.versions[-1]
+        rep["student"] = {"versions": len(eng.versions), "latest_effective": _iso(v["eff"]), "rows": v["n"],
+                          "fit_r2": dict(zip(student.OUTPUTS, v["r2"]))}
+
+    # ---- goal keeper: is the team on track? ---------------------------------
+    al = []
+    if rep["staleness_min"] > 25:
+        al.append(f"DATA STALE: last closed candle is {rep['staleness_min']} min old")
+    if rep["filled_last_24h"] > 30:
+        al.append(f"{rep['filled_last_24h']} missing candles were gap-filled in the last 24h")
+    w = rep["windows"].get("24h", {})
+    if w.get("n", 0) >= 600:
+        st, te, bl = w.get("student"), w.get("teacher"), w["baseline"]
+        if st and st["score"] < bl["typical"]["score"]:
+            al.append(f"OFF TRACK: 24h candle score {st['score']:.3f} is below the naive 'typical candle' "
+                      f"baseline {bl['typical']['score']:.3f}")
+        if st and te and st["score"] < 0.93 * te["score"]:
+            al.append(f"live generator loses to the full model: {st['score']:.3f} vs {te['score']:.3f}")
+        if abs(w["cov90"] - 0.90) > 0.03:
+            al.append(f"24h coverage of the 90% interval is {w['cov90']:.3f}")
+        if abs(w["cov50"] - 0.50) > 0.04:
+            al.append(f"24h coverage of the 50% interval is {w['cov50']:.3f}")
+        if w.get("skill_vs_empirical", 0) < 0:
+            al.append("24h: ensemble is WORSE than the unconditional baseline")
+        if w["agents"] and w["loss_cal"] > 1.03 * min(w["agents"].values()):
+            al.append("24h: ensemble is >3% worse than its best single agent")
+    if P is None or P.get("cal") is None:
+        al.append("no forecast is pending for the next candle")
+    elif P.get("gen") is None:
+        al.append("no generated candle for the next minute (no live-generator version in effect)")
+    if status.get("error"):
+        al.append("last run error: " + str(status["error"])[:300])
+    rep["alerts"] = al
+
+    rd = os.path.join(state_dir, "reports")
+    os.makedirs(rd, exist_ok=True)
+    store.write_json(os.path.join(rd, "latest.json"), rep, indent=1)
+    with open(os.path.join(rd, "latest.md"), "w") as f:
+        f.write(markdown(rep, agents))
+    publish(fc, eng, candles, rep, state_dir)
+    return rep
+
+
+def publish(fc, eng, candles, rep, state_dir, n=720):
+    """Files the site reads straight from the `state` branch."""
+    c = candles.iloc[-n:]
+    cand = [[int(t), round(o, 2), round(h, 2), round(l, 2), round(cl, 2), round(v, 4)]
+            for t, o, h, l, cl, v in zip(c["ts"], c["open"], c["high"], c["low"], c["close"], c["volume"])]
+    gen = []
+    if len(fc):
+        g = fc[fc["g_b"].notna()].iloc[-n:]
+        gen = [[int(t)] + [float(f"{x:.6g}") for x in vals]
+               for t, *vals in zip(g["ts"], g["g_b"], g["g_u"], g["g_d"], g["g_p"], g["g_05"], g["g_25"], g["g_75"], g["g_95"])]
+    P = eng.pending
+    if P is not None and P.get("gen"):
+        gg = P["gen"]
+        gen.append([int(P["for_ts"])] + [float(f"{gg[k]:.6g}") for k in ("b", "u", "d", "p", "q05", "q25", "q75", "q95")])
+    slim = {}
+    for k, m in rep["windows"].items():
+        if m.get("n", 0) < 30:
+            continue
+        slim[k] = {"n": m["n"], "student": m["student"], "teacher": m["teacher"], "baseline": m["baseline"],
+                   "cov90": _r(m["cov90"]), "cov50": _r(m["cov50"]), "skill": _r(m.get("skill_vs_empirical")),
+                   "brier": _r(m.get("brier")), "vol_corr": _r(m.get("vol_corr"))}
+    latest = {"v": 1, "product": PRODUCT, "gran": GRAN, "generated": int(rep["status"]["run_ts"]),
+              "last_ts": int(candles["ts"].iloc[-1]), "candles": cand,
+              "gen_cols": ["ts", "b", "u", "d", "p", "q05", "q25", "q75", "q95"], "gen": gen,
+              "windows": slim, "next": rep.get("next"), "hmm": rep.get("hmm"), "student": rep.get("student"),
+              "alerts": rep["alerts"], "retrain_log": rep["retrain_log"][-3:]}
+    store.write_json(os.path.join(state_dir, "live", "latest.json"), latest)
+    params = {"v": 1, "win": student.STUDENT_WIN, "lam": student.LAM, "features": student.FEATURES,
+              "outputs": student.OUTPUTS,
+              "versions": [{"eff": v["eff"], "W": v["W"].tolist()} for v in eng.versions[-12:]]}
+    store.write_json(os.path.join(state_dir, "live", "params.json"), params)
+
+
+def markdown(rep, agents):
+    L = [f"# {rep['product']} {rep['gran']}s candle generator - report", "",
+         f"- generated: {rep['generated']}",
+         f"- last closed candle: {rep['last_candle_close']} (staleness {rep['staleness_min']} min)", ""]
+    L += ["## Goal keeper alerts", ""] + ([f"- {a}" for a in rep["alerts"]] or ["- none: on track"]) + [""]
+    L += ["## The goal: generated candle vs real candle", "",
+          "score = 0.5 x body overlap + 0.5 x range overlap (1.0 = identical candle). `site` is the live "
+          "generator the site draws, `full` is the complete cloud model, `repeat` and `typical` are naive baselines.", "",
+          "| window | n | site score | full score | repeat | typical | site dir acc | site body IoU | site range IoU | body size ratio |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
+    f3 = lambda x: "-" if x is None else f"{x:.3f}"
+    for k, m in rep["windows"].items():
+        if m.get("n", 0) < 30:
+            continue
+        s, t, b = m.get("student") or {}, m.get("teacher") or {}, m["baseline"]
+        L.append(f"| {k} | {m['n']} | {f3(s.get('score'))} | {f3(t.get('score'))} | {f3(b['repeat']['score'])} "
+                 f"| {f3(b['typical']['score'])} | {f3(s.get('dir_acc'))} | {f3(s.get('body_iou'))} "
+                 f"| {f3(s.get('range_iou'))} | {f3(s.get('body_size_ratio'))} |")
+    L += ["", "## Probability quality (full model)", "",
+          "| window | pinball x1e5 | skill vs empirical | cov 90% | cov 50% | Brier | dir acc | vol corr |",
+          "|---|---|---|---|---|---|---|---|"]
+    for k, m in rep["windows"].items():
+        if m.get("n", 0) < 30:
+            continue
+        L.append(f"| {k} | {m['loss_cal'] * 1e5:.3f} | {m.get('skill_vs_empirical', float('nan')) * 100:.2f}% "
+                 f"| {m['cov90']:.3f} | {m['cov50']:.3f} | {f3(m.get('brier'))} | {f3(m.get('dir_acc_teacher'))} "
+                 f"| {f3(m.get('vol_corr'))} |")
+    L += ["", "## Per-agent pinball loss x1e5", "", "| window | " + " | ".join(agents) + " | ensemble | calibrated |",
+          "|---|" + "---|" * (len(agents) + 2)]
+    for k, m in rep["windows"].items():
+        if m.get("n", 0) < 30:
+            continue
+        L.append(f"| {k} | " + " | ".join(f"{m['agents'][e] * 1e5:.3f}" if e in m["agents"] else "-" for e in agents)
+                 + f" | {m['loss_raw'] * 1e5:.3f} | {m['loss_cal'] * 1e5:.3f} |")
+    nx = rep.get("next")
+    if nx:
+        L += ["", "## Next candle", "", f"- candle starting {nx['for_candle']}, last close {nx['last_close']}",
+              f"- P(up) {nx['p_up']}, return quantiles (bp): {nx['return_quantiles_bp']}",
+              f"- changepoint probability {nx['changepoint_prob']}, regime age {nx['regime_age_min']} min",
+              "- agent weights: " + ", ".join(f"{k} {v:.3f}" for k, v in nx["weights"].items())]
+    L += ["", "## Learning log", ""]
+    for e in rep["retrain_log"][-5:]:
+        L.append(f"- {_iso(e['ts'])}: " + json.dumps({k: v for k, v in e.items() if k != 'ts'}))
+    if "hmm" in rep:
+        L.append(f"- HMM volatility states (sd, bp per minute): {rep['hmm']['state_sd_bp']}, "
+                 f"current probabilities: {rep['hmm']['state_prob']}")
+    if "student" in rep:
+        L.append(f"- live generator: {rep['student']}")
+    L.append(f"- goal tuner (multipliers that currently maximise the candle score): {rep['goal_tuner']}")
+    L.append(f"- calibration offsets (in sigma): {rep['calibration_offsets_sigma']}")
+    return "\n".join(L) + "\n"

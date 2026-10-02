@@ -1,0 +1,10 @@
+state/
+cache/
+_devdata/
+ethprob/
+__pycache__/
+*.pyc
+.pytest_cache/
+parity.json
+node_modules/
+.Rhistory

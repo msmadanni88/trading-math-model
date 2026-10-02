@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Candle Generator · live</title>
+<meta name="description" content="A self-learning model generates the next one-minute candle before it happens; the real market is drawn over it, live.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%275%27 y=%271%27 width=%276%27 height=%2714%27 rx=%271%27 fill=%27none%27 stroke=%27%233987e5%27 stroke-width=%271.5%27/%3E%3Crect x=%276.5%27 y=%276%27 width=%273%27 height=%277%27 fill=%27%23199e70%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1><span id="product">ETH-USD</span> <small>1-minute candle generator</small></h1>
+      <p class="sub">The model draws the next candle before the minute starts. The real market is drawn over it.</p>
+    </div>
+  </div>
+  <div class="ticker">
+    <div class="price" id="price">—</div>
+    <div class="feeds">
+      <span class="feed" id="feed-market"><i></i><span>market feed</span></span>
+      <span class="feed" id="feed-cloud"><i></i><span>model cloud</span></span>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="chartcard">
+    <div class="legend" aria-label="Legend">
+      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-up"/><rect x="3" y="5" width="8" height="8" class="f-up"/></svg>real, up</span>
+      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-dn"/><rect x="3" y="5" width="8" height="8" class="f-dn"/></svg>real, down</span>
+      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-gen"/><line x1="7" y1="13" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="o-gen"/></svg>generated, up (hollow)</span>
+      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="f-gen"/></svg>generated, down (filled)</span>
+      <span class="key"><svg width="20" height="18" aria-hidden="true"><line x1="1" y1="9" x2="19" y2="9" class="s-band"/></svg>90% range</span>
+      <label class="toggle"><input type="checkbox" id="t-gen" checked> generated</label>
+      <label class="toggle"><input type="checkbox" id="t-band" checked> range</label>
+    </div>
+    <div class="readout" id="readout" aria-live="off"></div>
+    <div id="chart" role="img" aria-label="Candlestick chart: real one-minute candles with the model's generated candles overlaid"></div>
+    <p class="note" id="chartnote"></p>
+  </section>
+
+  <aside class="side">
+    <section class="card next">
+      <h2>Next candle <span class="clock" id="clock"></span></h2>
+      <div class="progress"><i id="progress"></i></div>
+      <div class="nextgrid" id="next">
+        <p class="muted">waiting for the model…</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Goal: match the real candle</h2>
+      <p class="muted small">Score 1.00 = identical candle. Half of it is body overlap (zero when the colour is wrong), half is high–low range overlap.</p>
+      <table class="score" id="score"><thead><tr><th>window</th><th>model</th><th>typical</th><th>repeat</th><th>colour right</th></tr></thead><tbody></tbody></table>
+      <p class="muted small" id="scorenote"></p>
+    </section>
+
+    <section class="card">
+      <h2>Team</h2>
+      <div id="weights" class="weights"></div>
+      <dl class="facts" id="regime"></dl>
+    </section>
+
+    <section class="card">
+      <h2>Goal keeper</h2>
+      <ul class="alerts" id="alerts"><li class="muted">—</li></ul>
+    </section>
+  </aside>
+</main>
+
+<footer class="foot">
+  <p>Research instrument. It holds no funds, places no orders, and nothing here is investment advice. Direction of a one-minute candle is close to a coin flip; size and range are what can actually be forecast.</p>
+  <p>Market data: Coinbase Exchange public feed. Charts: <a href="https://www.tradingview.com/" rel="noopener">TradingView</a> Lightweight Charts.</p>
+</footer>
+
+<script src="vendor/lightweight-charts.js"></script>
+<script src="student.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
