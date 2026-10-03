@@ -18,15 +18,19 @@ LGBM_HOLDOUT = 2880            # challenger is judged on the latest 2 unseen day
 LGBM_EMBARGO = 60
 
 # live generator (student) schedule
-HORIZON = 5                    # candles generated ahead at every minute
+HORIZON = 15                   # candles generated ahead at every minute (see GOAL.md for why 15)
 STUDENT_ROWS = 2880            # distilled on the latest 2 days of teacher output
-STUDENT_ROWS_H = 10080         # candles 2..HORIZON learn from one week of real outcomes
+STUDENT_ROWS_H = 10080         # the per-candle heads learn from one week of real outcomes
 STUDENT_STEP = 300             # a new version can become effective every 5 minutes
 STUDENT_LEAD = 420             # ... and never sooner than 7 minutes after it was fitted
 STUDENT_WIN = 240              # candles the live generator looks back on
 
-# reversal agent
-REV_K = 5                      # a swing point is the highest high / lowest low of the K candles on each side
-REV_H = 5                      # it is called up to H candles before it happens
-REV_TRAIN = 14400              # rows (10 days) the tree model of the reversal agent trains on
-REV_BUDGET = 0.08              # share of minutes on which the agent is allowed to make a call, per side
+# reversal agents (one per swing size)
+REV_KS = (3, 5, 8, 13)         # a swing point is the highest high / lowest low of the K candles on each side
+REV_K = 5                      # the swing size the site shows first
+REV_HS = (0, 2)                # call types: 0 = "the turn is in" (the candle that just closed, +-1),
+                               #             2 = "a turn is coming" (one of the next three candles)
+REV_TRAIN = 28800              # origins (20 days) the tree model of a reversal agent trains on
+REV_MIN_PER_DAY = 48           # an agent must keep making at least this many calls a day, per call type
+REV_TUNE_EVERY = 360           # it re-picks its confidence thresholds every 6 hours ...
+REV_TUNE_WIN = 10080           # ... from its own last 7 days

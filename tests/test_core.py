@@ -8,14 +8,17 @@ import pandas as pd
 
 from probcast import goal, store, student
 from probcast.agents.base import Ring
-from probcast.config import BUF, GRAN, STUDENT_WIN
+from probcast.config import BUF, GRAN, HORIZON, REV_HS, REV_KS, STUDENT_WIN
 from probcast.core import BOCPD, QUANTILES, VolHMM, garch_fit, normal_mixture_quantiles, pinball
 from probcast.engine import Engine, Hedge, QuantileTracker, median_abs, p_up
 from probcast.features import compute_features, feature_names, regularize
 from probcast.run import run_engine
 
 
-def synth(n=3000, seed=1):
+T0 = 1_600_000_020
+
+
+def synth(n=3000, seed=1, t0=T0):
     rng = np.random.default_rng(seed)
     vol = 0.0006 * np.exp(0.5 * np.sin(np.arange(n) / 150))
     r = rng.standard_t(4, n) * vol / np.sqrt(2)
@@ -24,7 +27,7 @@ def synth(n=3000, seed=1):
     h = np.round(np.maximum(o, c) * (1 + np.abs(rng.normal(0, 0.0002, n))), 2)
     l = np.round(np.minimum(o, c) * (1 - np.abs(rng.normal(0, 0.0002, n))), 2)
     v = rng.lognormal(3, 1, n)
-    return [[1_600_000_020 + i * GRAN, o[i], h[i], l[i], c[i], v[i]] for i in range(n)]
+    return [[t0 + i * GRAN, o[i], h[i], l[i], c[i], v[i]] for i in range(n)]
 
 
 def test_features_have_no_lookahead_and_finite_memory():
@@ -153,6 +156,15 @@ def test_candle_score():
     assert abs(b - 0.5) < 1e-12
 
 
+def _version(rng, fmt=student.FORMAT):
+    W = rng.normal(size=(len(student.OUTPUTS), len(student.FEATURES))) * 0.05
+    W[4:, 0] = [-1.6, -0.67, 0.67, 1.6]                # ordered quantiles, like a fitted model has
+    H = rng.normal(size=(HORIZON, len(student.H_OUTPUTS), len(student.FEATURES))) * 0.1
+    ver = {"fmt": fmt, "W": W, "H": H, "scale": [[1.0, 1.0]] + [[1.0 + 0.02 * h, 1.2 + 0.03 * h] for h in range(1, HORIZON)],
+           "cone": [1.0] + [float(np.sqrt(h)) for h in range(2, HORIZON + 1)]}
+    return W, H, ver
+
+
 def test_student_fit_recovers_linear_teacher_and_generates_valid_candle():
     rng = np.random.default_rng(2)
     n, d, k = 2000, len(student.FEATURES), len(student.OUTPUTS)
@@ -166,6 +178,57 @@ def test_student_fit_recovers_linear_teacher_and_generates_valid_candle():
     assert len(f) == d and np.all(np.isfinite(f)) and sig > 0
     g = student.generate(W, f, sig)
     assert g["u"] >= 0 and g["d"] >= 0 and 0 < g["p"] < 1 and (g["b"] > 0) == (g["p"] >= 0.5)
+
+
+def test_chain_of_generated_candles_is_connected_and_stays_in_its_own_range():
+    """Every candle opens where the previous one closed, its colour is the
+    sign of its body, wicks never point inwards, and the chain never ends a
+    candle outside the model's own 50% range if the other colour avoids it."""
+    rng = np.random.default_rng(5)
+    df = regularize(synth(900, seed=5))
+    C = df[["open", "high", "low", "close", "volume"]].to_numpy()
+    flips = 0
+    for trial in range(60):
+        W, H, ver = _version(rng)
+        end = 300 + trial * 9
+        f, sig = student.compact(C[end - STUDENT_WIN:end + 1], int(df["ts"].iloc[end]) + GRAN)
+        path = student.generate_path(ver, f, sig)
+        assert len(path) == HORIZON
+        n = student._next_raw(W, f, sig)
+        iq = 0.5 * (n["q75"] - n["q25"])
+        o = 0.0
+        for h, g in enumerate(path, 1):
+            assert g["o"] == o and g["u"] >= 0 and g["d"] >= 0
+            head_colour = 1.0 if g["p"] >= 0.5 else -1.0
+            assert (np.sign(g["b"]) == head_colour) != bool(g["flip"]) or g["b"] == 0
+            w = max(ver["cone"][h - 1] * iq, abs(g["b"]))
+            if abs(o + g["b"]) > w:                      # outside: only allowed if the other colour is no better
+                assert abs(o - g["b"]) >= abs(o + g["b"])
+            assert g["lo"] <= g["hi"]
+            flips += g["flip"]
+            o += g["b"]
+        assert path[0]["flip"] == 0 and path[0]["o"] == 0.0
+    assert flips > 20                                    # the rule was actually exercised
+    # an old-format version still gives the next candle, and only that
+    W, H, ver = _version(rng, fmt=None)
+    assert len(student.generate_path(ver, f, sig)) == 1
+
+
+def test_packed_trees_give_the_same_probabilities_as_lightgbm():
+    import lightgbm as lgb
+    rng = np.random.default_rng(7)
+    X = rng.normal(size=(4000, 12)).astype(np.float32)
+    y = (X[:, 0] + 0.5 * X[:, 3] * X[:, 5] + rng.normal(0, 1, 4000) > 0).astype(float)
+    m = lgb.train(dict(objective="binary", num_leaves=16, min_data_in_leaf=40, verbose=-1, seed=1), lgb.Dataset(X, label=y),
+                  num_boost_round=60)
+    packed = student.pack_trees(m.dump_model())
+    Xt = rng.normal(size=(500, 12))                      # double precision in: rounded to single inside
+    assert np.allclose(student.tree_probs(packed, Xt), m.predict(Xt.astype(np.float32)), rtol=0, atol=5e-4)     # rounding of the published numbers
+    again = json.loads(json.dumps({k: v for k, v in packed.items() if k != "_np"}))     # as the site receives it
+    assert np.array_equal(student.tree_probs(again, Xt), student.tree_probs(packed, Xt))
+
+
+RECORD = ("cal_", "g_", "t_", "lk_", "s", "d", "c") + tuple(f"r{K}_" for K in REV_KS)
 
 
 def test_engine_resume_equals_single_run(tmp_path):
@@ -184,14 +247,16 @@ def test_engine_resume_equals_single_run(tmp_path):
         rows += run_engine(e3, df.iloc[:min(k + 7, 4600)], k)
     b = pd.DataFrame(rows)
     assert len(a) == len(b) and (a["ts"] == b["ts"]).all()
-    cols = [c for c in a.columns if c.startswith(("cal_", "g", "t_", "c"))] + ["p_up"]
+    cols = [c for c in a.columns if c.startswith(RECORD)] + ["p_up"]
     assert a["g_b"].notna().sum() > 300
-    assert a["g5_b"].notna().sum() > 300 and a["c5_in"].notna().sum() > 300     # candles 2..5 ahead exist
-    assert np.allclose(a[cols].to_numpy(), b[cols].to_numpy(), rtol=1e-5, atol=1e-9, equal_nan=True)
+    last = f"s{HORIZON}"
+    assert a[last].notna().sum() > 300 and a[f"c{HORIZON}_in"].notna().sum() > 300      # the whole chain is scored
+    assert a["lk_o"].notna().sum() > 300
+    assert np.allclose(a[cols].to_numpy(float), b[cols].to_numpy(float), rtol=1e-5, atol=1e-9, equal_nan=True)
 
 
 def test_forecast_never_uses_its_own_outcome():
-    """Everything stored for candle t must be identical whatever candle t is."""
+    """Everything generated for candle t must be identical whatever candle t is."""
     rows = synth(4300, seed=4)
     alt = [list(r) for r in rows]
     alt[-1][1:5] = [x * 1.003 for x in alt[-1][1:5]]         # change only the last candle
@@ -200,23 +265,46 @@ def test_forecast_never_uses_its_own_outcome():
         fc = run_engine(Engine(), regularize(rr), 0)
         outs.append(fc[-1])
     assert outs[0]["ts"] == outs[1]["ts"] and outs[0]["y"] != outs[1]["y"]
-    assert np.isfinite(outs[0]["g_b"])
-    assert np.isfinite(outs[0]["g3_b"])
+    assert np.isfinite(outs[0]["g_b"]) and np.isfinite(outs[0]["lk_b"])
     for k in outs[0]:
-        if k.startswith(("cal_", "g", "t_")) or k in ("p_up", "sigma"):       # includes g2_..g5_
+        if k.startswith(("cal_", "g_", "t_")) or k in ("p_up", "sigma", "lk_h", "lk_o", "lk_b", "lk_u", "lk_d"):
             assert outs[0][k] == outs[1][k], k
+
+
+def test_fixed_record_is_the_chain_frozen_at_the_start_of_each_quarter_hour():
+    """Rows of one frozen chain: candle numbers 1..HORIZON aligned to the
+    clock, candle 1 opens at the last real close and is the candle generated
+    for that minute, and every later candle opens where the previous one closed."""
+    fc = pd.DataFrame(run_engine(Engine(), regularize(synth(4500, seed=41)), 0))
+    x = fc[fc["lk_o"].notna()]
+    seg = HORIZON * GRAN
+    assert len(x) > 600
+    assert ((x["ts"] % seg) // GRAN + 1 == x["lk_h"]).all()
+    first = x[x["lk_h"] == 1]
+    assert (first["lk_o"] == 0).all()
+    assert np.array_equal(first["lk_b"].to_numpy(), first["g_b"].to_numpy())
+    assert np.array_equal(first["lk_r"].to_numpy(), np.zeros(len(first)))
+    by = x.set_index("ts")
+    n = 0
+    for ts, r in by.iterrows():
+        if r["lk_h"] > 1 and ts - GRAN in by.index:
+            prev = by.loc[ts - GRAN]
+            assert abs(r["lk_o"] - (prev["lk_o"] + prev["lk_b"])) < 1e-15
+            # where the market really stood: one more real candle than the row before
+            assert abs(r["lk_r"] - (prev["lk_r"] + fc.set_index("ts").loc[ts - GRAN, "y"])) < 1e-12
+            n += 1
+    assert n > 500
 
 
 def test_live_generator_only_uses_published_versions():
     """A version may be used only from its effective time on, and it is fitted
     on data that ended STUDENT_LEAD seconds earlier."""
-    from probcast.config import STUDENT_LEAD
     e = Engine()
     fc = pd.DataFrame(run_engine(e, regularize(synth(2400, seed=6)), 0))
     g = fc[fc["g_b"].notna()]
     assert len(g) > 200 and (g["g_eff"] <= g["ts"]).all()
     for v in e.versions:
-        assert v["eff"] % 300 == 0
+        assert v["eff"] % 300 == 0 and v["fmt"] == student.FORMAT
     assert e.version_at(e.versions[0]["eff"] - 1) is None
 
 
@@ -231,122 +319,220 @@ def test_store_roundtrip(tmp_path):
 
 def test_write_js_parity_fixture(tmp_path):
     """Writes the fixture that tests/parity.mjs checks docs/student.js against."""
+    import lightgbm as lgb
     rng = np.random.default_rng(12)
     raw = synth(700, seed=13)
     del raw[500:503]                                   # a gap the browser must fill the same way
     df = regularize(raw)
     C = df[["open", "high", "low", "close", "volume"]].to_numpy()
-    W = rng.normal(size=(len(student.OUTPUTS), len(student.FEATURES))) * 0.2
-    H = rng.normal(size=(4, len(student.H_OUTPUTS), len(student.FEATURES))) * 0.1
-    ver = {"W": W, "H": H, "scale": [[1.1, 1.4], [1.0, 1.3], [0.9, 1.2], [1.2, 1.6]], "cone": [1.4, 1.7, 2.0, 2.3]}
-    R = rng.normal(size=(6, len(student.REV_FEATURES))) * 0.3
+    W, H, ver = _version(rng)
+    nf = len(student.REV_FEATURES) + 1
+    Xm = rng.normal(size=(3000, nf)).astype(np.float32) * 3
+    Xm[:, -1] = rng.choice(REV_HS, 3000)
+    ym = (Xm[:, 21] - Xm[:, 27] + rng.normal(0, 2, 3000) > 0).astype(float)
+    model = student.pack_trees(lgb.train(dict(objective="binary", num_leaves=12, min_data_in_leaf=30, verbose=-1, seed=3),
+                                         lgb.Dataset(Xm, label=ym), num_boost_round=40).dump_model())
     hi, lo = df["high"].to_numpy(), df["low"].to_numpy()
-    swings = [[int(i), bool(hi[i] >= hi[i - 5:i + 6].max()), bool(lo[i] <= lo[i - 5:i + 6].min())] for i in (100, 257, 333, 480, 612)]
+    swings = [[int(i), int(K), bool(hi[i] >= hi[i - K:i + K + 1].max()), bool(lo[i] <= lo[i - K:i + K + 1].min())]
+              for i in (100, 257, 333, 480, 612) for K in REV_KS]
     cases = []
+    keys = ("p", "b", "u", "d", "o", "lo", "hi", "flip")
     for end in (300, 455, 640, len(df) - 1):
         nts = int(df["ts"].iloc[end]) + GRAN
-        f, sig = student.compact(C[end - STUDENT_WIN:end + 1], nts)
         Cw = C[end - STUDENT_WIN:end + 1]
-        phis = [student.rev_features(Cw, f, sig, sd) for sd in (1, -1)]
+        f, sig = student.compact(Cw, nts)
+        rev = {}
+        for K in REV_KS:
+            phis = [student.rev_features(Cw, f, sig, sd, K) for sd in (1, -1)]
+            pr = student.tree_probs(model, student.rev_rows(phis[0], phis[1], REV_HS)).reshape(2, len(REV_HS))
+            rev[str(K)] = {"phi": [x.tolist() for x in phis], "probs": pr.tolist()}
         cases.append({"last_ts": int(df["ts"].iloc[end]), "f": f.tolist(), "sig": sig,
-                      "gen": student.generate(W, f, sig), "path": student.generate_path(ver, f, sig),
-                      "phi": [x.tolist() for x in phis], "rev": [student.rev_probs(R, x).tolist() for x in phis]})
+                      "gen": student.generate(W, f, sig),
+                      "path": [{k: g[k] for k in keys} for g in student.generate_path(ver, f, sig)], "rev": rev})
     sc = goal.candle_score(0.0011, 0.0004, 0.0002, 0.0001, -0.0007, 0.0009, -0.0012)
-    out = {"raw": raw, "n_regular": len(df), "W": W.tolist(), "cases": cases,
-           "ver": {"W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"]},
-           "R": R.tolist(), "swings": swings,
+    out = {"raw": raw, "n_regular": len(df), "W": W.tolist(), "cases": cases, "horizon": HORIZON,
+           "ver": {"fmt": ver["fmt"], "W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"]},
+           "model": {k: v for k, v in model.items() if k != "_np"}, "hs": list(REV_HS), "swings": swings,
            "score": [float(x) for x in sc]}
     path = os.environ.get("PARITY_FIXTURE", str(tmp_path / "parity.json"))
     with open(path, "w") as fh:
         json.dump(out, fh)
 
 
-def test_restoring_an_older_engine_gives_the_same_record():
+def _small_reversal(monkeypatch):
+    """Lets the reversal agents get a tree model within a few thousand candles."""
+    from probcast import engine
+    from probcast.agents import reversal
+    monkeypatch.setattr(reversal, "LGBM_HOLDOUT", 300)
+    monkeypatch.setattr(reversal, "LGBM_EMBARGO", 10)
+    monkeypatch.setattr(reversal, "CONTEST", [dict(rows=4000, rounds=40, min_data_in_leaf=60)] * 2)
+    monkeypatch.setattr(reversal, "REV_MIN_PER_DAY", 20)
+    monkeypatch.setattr(engine, "LGBM_EVERY", 720)
+    return reversal
+
+
+def test_restoring_an_older_engine_gives_the_same_record(monkeypatch):
     """In the cloud the fitted engine is saved only every ~30 minutes. A run
     that starts from an older copy must reproduce exactly what the runs in
     between stored, including which live-generator version each minute used."""
     import copy
-    df = regularize(synth(2300, seed=21))
+    _small_reversal(monkeypatch)
+    df = regularize(synth(3300, seed=21))
     eng = Engine()
-    run_engine(eng, df.iloc[:2000], 0)
+    run_engine(eng, df.iloc[:3000], 0)
     eng.simulate_publish = False
     rows, snap, snap_at, published = [], None, None, []
-    for k in range(2000, 2300, 5):                      # one "cloud run" every 5 candles
-        if k == 2265:                                  # 7 runs before the end
+    for k in range(3000, 3300, 5):                      # one "cloud run" every 5 candles
+        if k == 3265:                                  # 7 runs before the end
             snap, snap_at = copy.deepcopy(eng), len(rows)
         rows += run_engine(eng, df.iloc[:k + 5], k)
         now = int(df["ts"].iloc[k + 4]) + GRAN
         v = eng.fit_student(-(-(now + 420) // 300) * 300, np.iinfo(np.int64).max)
-        if v:
-            published.append({"eff": v["eff"], "W": json.loads(json.dumps(v["W"].tolist()))})
+        if v:                                          # exactly what report.publish writes to versions.json
+            published.append(json.loads(json.dumps({"eff": v["eff"], "fmt": v["fmt"], "W": v["W"].tolist(), "H": v["H"].tolist(),
+                                                    "scale": v["scale"], "cone": v["cone"], "rm": v["rm"], "rt": v["rt"]})))
     assert len(published) > 10
-    snap.merge_versions(published[-12:])                # what params.json on the state branch holds
-    again = run_engine(snap, df, 2265)
+    snap.merge_versions(published[-14:])                # what versions.json on the state branch holds
+    again = run_engine(snap, df, 3265)
     a, b = pd.DataFrame(rows[snap_at:]), pd.DataFrame(again)
     assert len(a) == len(b) == 35
-    cols = [c for c in a.columns if c.startswith(("cal_", "g_", "t_"))] + ["p_up"]
+    cols = [c for c in a.columns if c.startswith(RECORD)] + ["p_up"]
     assert a["g_eff"].nunique() > 3
     assert (a["g_eff"] == b["g_eff"]).all()             # same version used for every minute
+    assert a["r5_tn"].notna().all()                     # the reversal model spoke on every one of them
     # features come from differently sized tails -> last-digit float noise only
-    d = np.abs(a[cols].to_numpy() - b[cols].to_numpy()) / (np.abs(a[cols].to_numpy()) + 1e-12)
+    x, y = a[cols].to_numpy(float), b[cols].to_numpy(float)
+    d = np.abs(x - y) / (np.abs(x) + 1e-12)
     assert np.nanmax(d) < 1e-6, np.nanmax(d)
+    assert np.array_equal(np.isnan(x), np.isnan(y))
 
 
-def test_reversal_agent_labels_learning_and_calls():
-    from probcast.agents.reversal import ReversalAgent
-    from probcast.config import REV_H, REV_K
+def test_reversal_agents_labels_learning_and_calls(monkeypatch):
+    reversal = _small_reversal(monkeypatch)
     df = regularize(synth(6400, seed=31))
     e = Engine()
-    run_engine(e, df, 0)
-    rv = e.rev
-    # the label ring holds the true swing status of the candles that are K back
+    fc = pd.DataFrame(run_engine(e, df, 0))
     hi, lo = df["high"].to_numpy(), df["low"].to_numpy()
-    n = len(df)
-    for back in range(0, 6):
-        i = n - 1 - REV_K - back
-        want = [float(hi[i] >= hi[i - REV_K:i + REV_K + 1].max()), float(lo[i] <= lo[i - REV_K:i + REV_K + 1].min())]
-        assert list(rv.lab.back(back)) == want
-    assert rv.n_fit > 1500 and np.all(np.isfinite(rv.W))
-    news = [x[1] for x in rv.events if x[0] == "new"]
-    hits = [x[1] for x in rv.events if x[0] == "hit"]
-    assert len(news) > 10 and len(hits) > 5
-    for c in news:               # a call names the candle that just closed or one of the next H
-        assert c["made_ts"] - GRAN <= c["for_ts"] <= c["made_ts"] - GRAN + REV_H * GRAN
-    # every outcome matches the definition: a swing of that side within one candle
     ts = df["ts"].to_numpy()
     pos = {int(t): k for k, t in enumerate(ts)}
-    for for_ts, side, hit in hits:
-        k = pos[for_ts]
-        ext = hi if side > 0 else -lo
-        want = any(ext[m] >= ext[m - REV_K:m + REV_K + 1].max() for m in (k - 1, k, k + 1))
-        assert hit == int(want)
-    # no two calls of the same side within two minutes of each other
-    seen = {(c["for_ts"], c["side"]) for c in news}
-    assert not any((t + d * GRAN, s) in seen for t, s in seen for d in (1, 2))
+    n = len(df)
+    total = 0
+    for K, rv in e.rev.items():
+        # the label ring holds the true swing status of the candles that are K back
+        for back in range(0, 3):
+            i = n - 1 - K - back
+            want = [float(hi[i] >= hi[i - K:i + K + 1].max()), float(lo[i] <= lo[i - K:i + K + 1].min())]
+            assert list(rv.lab.back(back)) == want
+        assert rv.n_fit > 5000 and rv.model_id > 0 and rv.model_id in rv.models
+        news = [x[1] for x in rv.events if x[0] == "new"]
+        hits = [x[1] for x in rv.events if x[0] == "hit"]
+        total += len(news)
+        for c in news:               # "now" names the candle that just closed, "next" the one two minutes on
+            assert c["k"] == K and c["for_ts"] == c["made_ts"] - GRAN + REV_HS[c["typ"]] * GRAN
+            row = fc[fc["ts"] == c["made_ts"] - GRAN].iloc[0]          # the stored probability is the one acted on
+            col = f"r{K}_{'t' if c['side'] > 0 else 'b'}{'n' if c['typ'] == 0 else 'x'}"
+            assert abs(row[col] - c["p"]) < 6e-4
+        # every outcome matches the definition: a swing of that side within one candle
+        for for_ts, k_, side, typ, hit in hits:
+            k = pos[for_ts]
+            ext = hi if side > 0 else -lo
+            want = any(ext[m] >= ext[m - K:m + K + 1].max() for m in (k - 1, k, k + 1))
+            assert k_ == K and hit == int(want)
+        # no two calls of the same side and type within two minutes of each other
+        seen = {(c["for_ts"], c["side"], c["typ"]) for c in news}
+        assert not any((t + d * GRAN, s, a) in seen for t, s, a in seen for d in (1, 2))
+        # the history the thresholds are tuned on is aligned: outcome of origin t, type a = label of candle t + horizon
+        P, Y = rv.history()
+        ok = np.nonzero(np.isfinite(Y[:, 0, 0]))[0]
+        assert len(ok) > 3000
+        base = n - len(P)                              # history row i is candle base + i
+        for i in ok[-40:]:
+            for a, j in enumerate(REV_HS):
+                m = base + i + j
+                assert Y[i, 0, a] == float(any(hi[q] >= hi[q - K:q + K + 1].max() for q in (m - 1, m, m + 1)))
+    assert total > 30
+    # thresholds were re-picked from the agents' own history
+    assert any(rv.tuned for rv in e.rev.values())
+    assert reversal.spaced([1, 2, 3, 4, 7, 8, 20]) == [1, 4, 7, 20]
+    assert 0.0 < reversal.wilson_low(8, 10) < reversal.wilson_low(800, 1000) < 0.8      # more calls, less doubt
 
 
-def test_stored_calls_and_generated_candles_are_never_rewritten(tmp_path):
+def test_stored_calls_are_never_rewritten_and_record_columns_are_protected(tmp_path):
     sd = str(tmp_path)
-    c1 = {"made_ts": 1000, "for_ts": 1060, "side": 1, "p": 0.4, "level": 2000.0, "eff": 900}
+    c1 = {"made_ts": 1000, "for_ts": 1060, "k": 5, "side": 1, "typ": 0, "p": 0.4, "level": 2000.0, "model": 900}
     store.merge_calls(sd, [("new", c1)])
-    store.merge_calls(sd, [("new", dict(c1, p=0.9, level=1.0)), ("hit", (1060, 1, 1))])     # same call again
-    store.merge_calls(sd, [("hit", (1060, 1, 0))])                                           # outcome again
+    store.merge_calls(sd, [("new", dict(c1, p=0.9, level=1.0)), ("hit", (1060, 5, 1, 0, 1))])  # same call again
+    store.merge_calls(sd, [("hit", (1060, 5, 1, 0, 0))])                                        # outcome again
+    store.merge_calls(sd, [("new", dict(c1, k=8, p=0.7)), ("new", dict(c1, typ=1, p=0.5))])     # another agent / the other call type
     got = store.read_calls(sd).to_dict("records")
-    assert len(got) == 1 and got[0]["p"] == 0.4 and got[0]["level"] == 2000.0 and got[0]["hit"] == 1
+    assert len(got) == 3 and got[0]["p"] == 0.4 and got[0]["level"] == 2000.0 and got[0]["hit"] == 1
+    assert (got[1]["typ"], got[1]["p"]) == (1, 0.5) and got[2]["k"] == 8 and got[2]["hit"] != got[2]["hit"]
     from probcast.run import PROTECTED
-    cols = ["g_b", "g_u", "g_p", "g_95", "g_eff", "g2_b", "g5_o", "c3_in", "t_b", "y", "cal_50", "cp_prob", "loss_garch"]
-    assert [c for c in cols if PROTECTED.match(c)] == cols[:8]
+    cols = ["g_b", "g_u", "g_p", "g_95", "g_eff", "g2_b", "g5_o", "c3_in", "c15_in", "s2", "s15", "d7", "lk_o", "lk_h", "r5_tn", "r13_bx",
+            "t_b", "y", "cal_50", "cp_prob", "loss_garch", "sigma", "p_up", "ts"]
+    assert [c for c in cols if PROTECTED.match(c)] == cols[:16]
 
 
-def test_locked_layer_offsets_match_the_generated_path():
-    """The fixed record of minute M is candle 5 of the path made five minutes
-    before; its stored opening offset must equal the sum of that path's first
-    four bodies, which are stored on the rows in between."""
-    from probcast.report import add_locked
-    e = Engine()
-    fc = pd.DataFrame(run_engine(e, regularize(synth(4400, seed=41)), 0))
-    x = fc[fc["g5_o"].notna()].iloc[-50:]
-    chain = (fc["g_b"].shift(4) + fc["g2_b"].shift(3) + fc["g3_b"].shift(2) + fc["g4_b"].shift(1)).loc[x.index]
-    assert len(x) == 50 and np.allclose(x["g5_o"], chain, rtol=0, atol=1e-12)
-    lk = add_locked(fc.drop(columns=["g5_o"]))                    # old rows: rebuilt from the chain
-    assert np.allclose(lk.loc[x.index, "lk_o"], x["g5_o"], atol=1e-12)
+def test_ledger_keeps_days_that_are_two_days_old(tmp_path):
+    sd = str(tmp_path)
+    mk = lambda rows: pd.DataFrame(rows, columns=store.LEDGER_COLS)
+    a = store.merge_ledger(sd, mk([["2026-10-01", "x", 100, 55, 0.5, 0], ["2026-10-02", "x", 100, 60, 0.5, 1]]), "2026-10-02")
+    assert len(a) == 2
+    # two days later a recomputation disagrees about the 1st: the archive wins; the 3rd (yesterday) is still open
+    b = store.merge_ledger(sd, mk([["2026-10-01", "x", 100, 99, 0.5, 0], ["2026-10-03", "x", 50, 30, 0.5, 1],
+                                   ["2026-10-04", "x", 10, 5, 0.5, 1]]), "2026-10-04")
+    got = {r["day"]: r["wins"] for r in b.to_dict("records")}
+    assert got == {"2026-10-01": 55, "2026-10-02": 60, "2026-10-03": 30, "2026-10-04": 5}
+    c = store.merge_ledger(sd, mk([["2026-10-03", "x", 50, 31, 0.5, 1]]), "2026-10-04")
+    assert {r["day"]: r["wins"] for r in c.to_dict("records")}["2026-10-03"] == 31       # yesterday may still change
+
+
+def test_full_run_writes_everything_and_a_rebuild_changes_nothing_already_stored(tmp_path, monkeypatch):
+    """End to end on a state folder: one run, then the fitted engine is thrown
+    away and everything is rebuilt from the candles. Whatever the first run
+    stored as the models' word must still be there, value for value."""
+    from probcast import config, run
+    _small_reversal(monkeypatch)
+    monkeypatch.setattr(run, "START", "2026-09-01")
+    t0 = 1_790_000_040
+    rows = synth(5200, seed=51, t0=t0)
+    sd, cd = str(tmp_path / "state"), str(tmp_path / "cache")
+    store.write_candles(sd, rows[:5000])
+    now1 = rows[4999][0] + 70
+    status, rep = run.step(sd, cd, offline=True, now=now1)
+    assert status["replay"] and status["error"] is None
+    live = lambda name: json.load(open(os.path.join(sd, "live", name)))
+    latest, params, head = live("latest.json"), live("params.json"), live("head.json")
+    assert head["generated"] == latest["generated"] == int(now1) and head["last_ts"] == rows[4999][0]
+    assert len(latest["path"]["candles"]) == HORIZON and latest["horizon"] == HORIZON
+    assert len(latest["locked"]) > 500 and latest["locked"][-1][0] > latest["last_ts"]          # reaches into the open chain
+    assert all(v["fmt"] == student.FORMAT and len(v["H"]) == HORIZON for v in params["versions"])
+    for K in REV_KS:
+        used = {str(v["rm"][str(K)]) for v in params["versions"]} - {"0"}
+        assert used and used <= set(live(f"rev_k{K}.json")["models"]) and used <= set(head["models"][str(K)])     # every model in use is published
+        assert len(latest["rev"][str(K)]["probs"]) > 300
+    assert rep["ledger"] and "colour_next" in rep["ledger"] and "overall" in rep["ledger"]
+    meta = json.load(open(os.path.join(sd, "meta.json")))
+    assert meta["live_since"] == int(now1)
+    fc1 = store.read_forecasts(sd)
+    calls1 = store.read_calls(sd)
+    assert len(calls1) > 20
+    # second run: new candles arrive and the saved engine is lost -> full rebuild
+    store.write_candles(sd, rows)
+    os.remove(os.path.join(cd, "engine.pkl.gz"))
+    status2, _ = run.step(sd, cd, offline=True, now=rows[-1][0] + 70)
+    assert status2["replay"]
+    fc2 = store.read_forecasts(sd)
+    assert len(fc2) > len(fc1)
+    a, b = fc1.set_index("ts"), fc2.set_index("ts").loc[fc1["ts"]]
+    prot = [c for c in a.columns if run.PROTECTED.match(c)]
+    assert len(prot) > 60
+    x, y = a[prot].to_numpy(float), b[prot].to_numpy(float)
+    was = ~np.isnan(x)
+    assert np.array_equal(x[was], y[was])                      # nothing that was written has changed
+    calls2 = store.read_calls(sd).set_index(["for_ts", "k", "side", "typ"])
+    for r in calls1.itertuples():
+        q = calls2.loc[(r.for_ts, r.k, r.side, r.typ)]
+        assert q["p"] == r.p and q["made_ts"] == r.made_ts
+        assert r.hit != r.hit or q["hit"] == r.hit
+    assert json.load(open(os.path.join(sd, "meta.json")))["live_since"] == int(now1)      # go-live date is kept

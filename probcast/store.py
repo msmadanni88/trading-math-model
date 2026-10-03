@@ -3,10 +3,12 @@
 Plain-text CSV, one file per UTC day: a run appends a few lines to one small
 file, so git stores only tiny deltas.
 
-  candles/YYYY-MM-DD.csv    forecasts/YYYY-MM-DD.csv    reversals/YYYY-MM-DD.csv
-  live/latest.json  live/params.json      what the site reads
+  candles/YYYY-MM-DD.csv    forecasts/YYYY-MM-DD.csv    calls/YYYY-MM-DD.csv
+  ledger/winrate.csv                      win rate per day and layer (archive)
+  live/head.json latest.json params.json rev_k<K>.json      what the site reads
   reports/latest.md|json  status.json
 """
+import calendar
 import csv
 import glob
 import json
@@ -101,11 +103,11 @@ def clean(o):
     return o
 
 
-CALL_COLS = ["made_ts", "for_ts", "side", "p", "level", "eff", "hit"]
+CALL_COLS = ["made_ts", "for_ts", "k", "side", "typ", "p", "level", "model", "hit"]
 
 
 def read_calls(sd, since_ts=None):
-    files = _files(sd, "reversals", since_ts)
+    files = _files(sd, "calls", since_ts)
     if not files:
         return pd.DataFrame(columns=CALL_COLS)
     return pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
@@ -114,7 +116,8 @@ def read_calls(sd, since_ts=None):
 def merge_calls(sd, events):
     """Append new reversal calls and fill in outcomes. A stored call is never
     edited: a call that already exists is left as it is, and an outcome is
-    written only once."""
+    written only once. (The `reversals/` folder next to this one is the
+    archive of the first generation of the agent; it is not touched.)"""
     if not events:
         return
     days = {}
@@ -122,20 +125,40 @@ def merge_calls(sd, events):
         ts = e["for_ts"] if kind == "new" else e[0]
         days.setdefault(day(ts), []).append((kind, e))
     for d, evs in days.items():
-        path = os.path.join(sd, "reversals", d + ".csv")
+        path = os.path.join(sd, "calls", d + ".csv")
         rows = {}
         if os.path.exists(path):
             for r in pd.read_csv(path).to_dict("records"):
-                rows[(int(r["for_ts"]), int(r["side"]))] = r
+                rows[(int(r["for_ts"]), int(r["k"]), int(r["side"]), int(r["typ"]))] = r
         for kind, e in evs:
             if kind == "new":
-                rows.setdefault((e["for_ts"], e["side"]), dict(e, hit=np.nan))
+                rows.setdefault((e["for_ts"], e["k"], e["side"], e["typ"]), dict(e, hit=np.nan))
             else:
-                r = rows.get((e[0], e[1]))
+                r = rows.get((e[0], e[1], e[2], e[3]))
                 if r is not None and not (r["hit"] == r["hit"]):        # outcome still empty
-                    r["hit"] = e[2]
+                    r["hit"] = e[4]
         df = pd.DataFrame([rows[k] for k in sorted(rows)], columns=CALL_COLS)
         _atomic_text(path, lambda f, df=df: df.to_csv(f, index=False, float_format="%.6g", lineterminator="\n"))
+
+
+LEDGER_COLS = ["day", "layer", "n", "wins", "base", "live"]
+
+
+def merge_ledger(sd, fresh, today):
+    """The win-rate archive. A day is written for good once it is two days
+    old (so that every prediction made on it has been judged); until then it
+    is recomputed on every run. Returns the whole ledger."""
+    path = os.path.join(sd, "ledger", "winrate.csv")
+    old = pd.read_csv(path, dtype={"day": str}) if os.path.exists(path) else pd.DataFrame(columns=LEDGER_COLS)
+    frozen_before = day(calendar.timegm(time.strptime(today, "%Y-%m-%d")) - 86400)
+    keep = old[old["day"] < frozen_before]
+    have = set(zip(keep["day"], keep["layer"]))
+    add = fresh[[(d, l) not in have for d, l in zip(fresh["day"], fresh["layer"])]] if len(fresh) else fresh
+    led = pd.concat([keep, add[LEDGER_COLS]], ignore_index=True) if len(add) else keep
+    led = led.sort_values(["day", "layer"]).reset_index(drop=True)
+    if len(led):
+        _atomic_text(path, lambda f: led.to_csv(f, index=False, float_format="%.6g", lineterminator="\n"))
+    return led
 
 
 def write_json(path, obj, indent=None):
@@ -152,7 +175,7 @@ def read_json(path):
 
 def prune(sd, now, keep_forecast_days=180, keep_candle_days=400):
     """Old daily files are dropped so the state branch stays small."""
-    for kind, days in (("forecasts", keep_forecast_days), ("reversals", keep_forecast_days), ("candles", keep_candle_days)):
+    for kind, days in (("forecasts", keep_forecast_days), ("calls", keep_forecast_days), ("candles", keep_candle_days)):
         cut = day(now - days * 86400)
         for p in glob.glob(os.path.join(sd, kind, "*.csv")):
             if os.path.basename(p)[:10] < cut:

@@ -1,33 +1,41 @@
-"""Live generator ("student").
+"""Live generator ("student") and everything else the browser computes itself.
 
-The full model stack (teacher) only runs in the cloud, every few minutes. To
-draw the next candle at the exact moment a minute closes, the browser needs a
-model it can evaluate by itself. The student is that model: a small linear map
-from compact, cheap features to the teacher's outputs (knowledge distillation),
-refitted on every cloud run and published as plain numbers.
+The full model stack (teacher) only runs in the cloud, every few minutes or
+hours. To draw the next candles at the exact moment a minute closes, the
+browser needs models it can evaluate by itself, from numbers the cloud
+published BEFORE that minute started:
+
+  W       linear copy of the full model for the next candle (size, range, quantiles)
+  H       one linear head per candle 1..HORIZON, fitted on what the market really did
+          (direction, body size, reach above / below)
+  scale   per-candle size multipliers learned from the goal score
+  cone    per-candle width of the range for the close
+  trees   the reversal agents' tree models, evaluated node by node
 
 docs/student.js is a line-by-line mirror of this file; tests/parity.mjs proves
-both give the same numbers. The official record of generated candles is
-produced by the same function with the parameter version that was already
-published when that minute started, so what the site showed live is exactly
-what is stored.
+both give the same numbers. The cloud's record is produced by these same
+functions with the parameter version that was already published when that
+minute started, so what the site showed live is what gets stored.
 """
 import numpy as np
 
-from .config import HORIZON, REV_K, STUDENT_WIN
+from .config import HORIZON, STUDENT_WIN
 
 LAM = 0.97
 FEATURES = ["bias", "z0", "z1", "z2", "m5", "m15", "m60", "lv", "rv5", "body", "wick_up", "wick_dn",
             "rng", "vr", "pos60", "min_sin", "min_cos", "top_hour", "top_quarter", "hr_sin", "hr_cos"]
 OUTPUTS = ["logit_p", "l_abs", "l_hi", "l_lo", "b05", "b25", "b75", "b95"]
-H_OUTPUTS = ["s_dir", "l_abs", "l_hi", "l_lo"]      # per extra horizon (candles 2..HORIZON)
-REV_FEATURES = FEATURES + ["d_k", "d_2k", "d_30", "is_new", "age", "run", "reject", "leg"]
-_FLIP = [1, 2, 3, 4, 5, 6, 9, 14]                   # features whose sign mirrors with the side
+H_OUTPUTS = ["s_dir", "l_abs", "l_hi", "l_lo"]      # per candle 1..HORIZON
+REV_EXTRA = ["gap_k", "gap_2k", "gap_4k", "gap_30", "d_k", "d_30", "reject", "dh1", "dh2", "r1", "r2", "range",
+             "leg", "leg_2k", "cpos", "cbody", "age", "run", "prev_reject", "prev_gap"]
+REV_FEATURES = FEATURES + REV_EXTRA
+_FLIP = [1, 2, 3, 4, 5, 6, 9, 14]                   # compact features whose sign mirrors with the side
 OFF = 0.01
 OFF_H = 0.1
 RIDGE_H = 30.0
 _W = LAM ** np.arange(STUDENT_WIN)          # weight 1 for the newest return
 RIDGE = 3.0
+FORMAT = 2                                  # layout of a published version (see generate_path)
 
 
 def _clip(x, a):
@@ -82,14 +90,14 @@ def fit(X, Y, ridge=RIDGE):
 
 
 def outcome_targets(r, e_up, e_dn, sig):
-    """Targets for the candles further ahead, taken from what the market
-    actually printed (arrays). sig: volatility scale at the moment of forecast."""
+    """Targets of the per-candle heads, taken from what the market actually
+    printed (arrays). sig: volatility scale at the moment of the forecast."""
     q = lambda v: np.log(np.clip(v / sig, 0, 20) + OFF_H)
     return np.column_stack([np.sign(r), q(np.abs(r)), q(e_up), q(e_dn)])
 
 
 def horizon_raw(Wh, f, sig):
-    """Unscaled forecast of one further-ahead candle: (direction, |body|,
+    """Unscaled forecast of one candle from its head: (direction, |body|,
     reach up, reach down, P(up))."""
     y = Wh @ f
     p = min(max(0.5 + 0.5 * float(y[0]), 0.02), 0.98)
@@ -97,81 +105,168 @@ def horizon_raw(Wh, f, sig):
     return (1.0 if p >= 0.5 else -1.0, size(y[1]), size(y[2]), size(y[3]), p)
 
 
-def generate(W, f, sig):
-    """Returns dict: p (P(up)), b (signed body), u, d (wicks beyond the body),
-    q05..q95 - all as log-price offsets from the last close."""
+def _next_raw(W, f, sig):
+    """The full model's view of the next candle, through its linear copy."""
     y = W @ f
-    p = 1.0 / (1.0 + np.exp(-y[0]))
-    a = sig * max(float(np.exp(y[1])) - OFF, 0.0)
-    b = a if p >= 0.5 else -a
-    e_up = sig * max(float(np.exp(y[2])) - OFF, 0.0)
-    e_dn = sig * max(float(np.exp(y[3])) - OFF, 0.0)
-    return {"p": float(p), "b": float(b),
-            "u": max(e_up - max(b, 0.0), 0.0), "d": max(e_dn - max(-b, 0.0), 0.0),
+    return {"p": float(1.0 / (1.0 + np.exp(-y[0]))),
+            "a": sig * max(float(np.exp(y[1])) - OFF, 0.0),
+            "e_up": sig * max(float(np.exp(y[2])) - OFF, 0.0), "e_dn": sig * max(float(np.exp(y[3])) - OFF, 0.0),
             "q05": float(sig * y[4]), "q25": float(sig * y[5]), "q75": float(sig * y[6]), "q95": float(sig * y[7])}
 
 
+def generate(W, f, sig):
+    """The next candle from the linear copy alone. Returns dict: p (P(up)),
+    b (signed body), u, d (wicks beyond the body), q05..q95 - all as log-price
+    offsets from the last close."""
+    n = _next_raw(W, f, sig)
+    b = n["a"] if n["p"] >= 0.5 else -n["a"]
+    return {"p": n["p"], "b": float(b), "u": max(n["e_up"] - max(b, 0.0), 0.0), "d": max(n["e_dn"] - max(-b, 0.0), 0.0),
+            "q05": n["q05"], "q25": n["q25"], "q75": n["q75"], "q95": n["q95"]}
+
+
 def generate_path(ver, f, sig):
-    """The next HORIZON candles. Candle 1 is the distilled full model; candles
-    2.. come from heads fitted on real outcomes, sized by multipliers the goal
-    tuner learned for that horizon. `o` is where each candle opens and `lo` /
-    `hi` bound its CLOSE (90% cone) - all as log-offsets from the last real close."""
-    g = generate(ver["W"], f, sig)
-    g["o"], g["lo"], g["hi"] = 0.0, g["q05"], g["q95"]
-    path = [g]
-    if ver.get("H") is None:
-        return path
-    o = g["b"]
-    for j, Wh in enumerate(ver["H"]):
-        d, a, e_up, e_dn, p = horizon_raw(np.asarray(Wh), f, sig)
-        kb, kr = ver["scale"][j]
-        b = d * a * kb
-        c = ver["cone"][j]
-        path.append({"p": p, "b": float(b), "u": max(kr * e_up - max(b, 0.0), 0.0),
-                     "d": max(kr * e_dn - max(-b, 0.0), 0.0), "o": float(o), "lo": c * g["q05"], "hi": c * g["q95"]})
+    """The next HORIZON candles, as one connected chain.
+
+    Every candle h has
+      colour   from its own direction head H[h-1], fitted on real outcomes
+      size     candle 1: the full model's sizes; candles 2..: its own head
+               times the multipliers the goal tuner learned for that candle
+      o        where it opens = where the previous candle of the chain closed
+      lo, hi   the 90% range for its CLOSE (`cone` times the range of candle 1)
+    all as log-offsets from the last real close.
+
+    One rule keeps the chain honest: it may never walk out of the model's own
+    50% range for that minute. If the colour a head prefers would close the
+    candle outside it (and the other colour would not be further out), the
+    candle takes the other colour (`flip`). Without this rule, heads that all
+    lean the same way draw a staircase the model itself does not believe.
+    """
+    n = _next_raw(ver["W"], f, sig)
+    H = ver.get("H")
+    if H is None or ver.get("fmt") != FORMAT:
+        g = generate(ver["W"], f, sig)
+        g.update(o=0.0, lo=g["q05"], hi=g["q95"], flip=0)
+        return [g]
+    iq = 0.5 * (n["q75"] - n["q25"])
+    path, o = [], 0.0
+    for h in range(1, len(H) + 1):
+        d, a, e_up, e_dn, p = horizon_raw(np.asarray(H[h - 1]), f, sig)
+        raw = (d, a, e_up, e_dn)                      # what the head said, before any multiplier
+        if h == 1:
+            a, e_up, e_dn, cone = n["a"], n["e_up"], n["e_dn"], 1.0
+        else:
+            kb, kr = ver["scale"][h - 1]
+            a, e_up, e_dn, cone = a * kb, e_up * kr, e_dn * kr, ver["cone"][h - 1]
+        b = d * a
+        w = max(cone * iq, a)
+        flip = abs(o + b) > w and abs(o - b) < abs(o + b)
+        if flip:
+            b = -b
+        g = {"p": p, "b": float(b), "u": max(e_up - max(b, 0.0), 0.0), "d": max(e_dn - max(-b, 0.0), 0.0),
+             "o": float(o), "lo": cone * n["q05"], "hi": cone * n["q95"], "flip": int(flip), "raw": raw}
+        if h == 1:
+            g.update(q05=n["q05"], q25=n["q25"], q75=n["q75"], q95=n["q95"])
+        path.append(g)
         o += b
     return path
 
 
-# ---------------------------------------------------------------- reversal agent
-def rev_features(C, f, sig, side):
-    """Features for "will a swing point form in the next candles".
+# ---------------------------------------------------------------- reversal agents
+def rev_features(C, f, sig, side, K):
+    """What a reversal agent of swing size K looks at after a candle closes.
     side = +1 for a top (swing high), -1 for a bottom (swing low). A bottom is
-    a top of the mirrored price, so one model serves both sides.
-    C: latest closed candles [o, h, l, c, v] (oldest first); f, sig: compact()."""
+    a top of the mirrored price, so one model serves both sides: every price
+    below is taken in mirrored form (high -> -low, close -> -close ...).
+    C: latest closed candles [o, h, l, c, v] (oldest first, at least 4K + 2 and
+    32 of them); f, sig: compact(). Distances are in units of the current
+    one-minute volatility."""
     m = [float(x) for x in f]
     for i in _FLIP:
         m[i] = side * m[i]
     if side < 0:
         m[10], m[11] = m[11], m[10]
-    c = C[-1][3]
-    hi, lo = [r[1] for r in C[-31:]], [r[2] for r in C[-31:]]
+    n = max(4 * K, 30) + 2
+    W = [list(map(float, r)) for r in C[-n:]]
     if side > 0:
-        ext = hi
-        dist = lambda n: float(np.log(max(ext[-n:]) / c)) / sig
-        reject = float(np.log(hi[-1] / c)) / sig
-        leg = float(np.log(c / min(lo[-10:]))) / sig
-        is_new = 1.0 if hi[-1] >= max(hi[-REV_K - 1:-1]) else 0.0
-        best = max(ext[-10:])
+        Hh, Ll = [r[1] for r in W], [r[2] for r in W]
+        Cc, Oo = [r[3] for r in W], [r[0] for r in W]
     else:
-        ext = lo
-        dist = lambda n: float(np.log(c / min(ext[-n:]))) / sig
-        reject = float(np.log(c / lo[-1])) / sig
-        leg = float(np.log(max(hi[-10:]) / c)) / sig
-        is_new = 1.0 if lo[-1] <= min(lo[-REV_K - 1:-1]) else 0.0
-        best = min(ext[-10:])
+        Hh, Ll = [-r[2] for r in W], [-r[1] for r in W]
+        Cc, Oo = [-r[3] for r in W], [-r[0] for r in W]
+    sg = sig * W[-1][3]
+    rng = W[-1][1] - W[-1][2]
+    top = lambda w: max(Hh[-w:])
     age = 0
-    while ext[-1 - age] != best:                 # candles since the extreme of the last 10
+    best = max(Hh[-(2 * K + 1):])
+    while Hh[-1 - age] != best:                  # candles since the high of the last 2K + 1
         age += 1
     run = 0
-    while run < 5 and side * (C[-1 - run][3] - C[-2 - run][3]) > 0:
+    while run < 5 and Cc[-1 - run] > Cc[-2 - run]:
         run += 1
-    cl = lambda x, a: min(max(x, 0.0), a)
-    return np.array(m + [cl(dist(REV_K), 8), cl(dist(2 * REV_K), 8), cl(dist(30), 8), is_new, age / 10.0,
-                         run / 5.0, cl(reject, 8), cl(leg, 12)])
+    x = [(top(K) - Hh[-1]) / sg, (top(2 * K) - Hh[-1]) / sg, (top(4 * K) - Hh[-1]) / sg, (top(30) - Hh[-1]) / sg,
+         (top(K) - Cc[-1]) / sg, (top(30) - Cc[-1]) / sg, (Hh[-1] - Cc[-1]) / sg,
+         (Hh[-1] - Hh[-2]) / sg, (Hh[-2] - Hh[-3]) / sg, (Cc[-1] - Cc[-2]) / sg, (Cc[-2] - Cc[-3]) / sg, rng / sg,
+         (Cc[-1] - min(Ll[-10:])) / sg, (Cc[-1] - min(Ll[-2 * K:])) / sg,
+         (Hh[-1] - Cc[-1]) / rng if rng > 0 else 0.5, (Cc[-1] - Oo[-1]) / rng if rng > 0 else 0.0,
+         age / (2.0 * K), run / 5.0,
+         (Hh[-2] - Cc[-2]) / sg, (max(Hh[-K - 1:-1]) - Hh[-2]) / sg]
+    return np.array(m + [_clip(v, 20.0) for v in x])
 
 
-def rev_probs(R, phi):
-    """R: (horizons, features). Probability that the candle j steps ahead is a swing point."""
-    z = np.clip(np.asarray(R) @ phi, -30, 30)
-    return 1.0 / (1.0 + np.exp(-z))
+def pack_trees(dump):
+    """LightGBM's dump_model() -> flat arrays the browser can walk. Numbers
+    are rounded to keep the file small: the packed model IS the published
+    model, and every implementation walks exactly these numbers.
+    f / t: split feature and threshold of every internal node; l / r: child
+    (>= 0: internal node, < 0: leaf number -(x) - 1); v: leaf values; roots:
+    first node of every tree."""
+    F, T, L, R, V, roots = [], [], [], [], [], []
+
+    def walk(nd):
+        if "leaf_value" in nd:
+            V.append(float(f"{nd['leaf_value']:.5g}"))
+            return -len(V)
+        if nd["decision_type"] != "<=":
+            raise ValueError("only numerical splits are supported")
+        i = len(F)
+        F.append(int(nd["split_feature"]))
+        T.append(float(f"{nd['threshold']:.7g}"))
+        L.append(0)
+        R.append(0)
+        L[i] = walk(nd["left_child"])
+        R[i] = walk(nd["right_child"])
+        return i
+
+    for t in dump["tree_info"]:
+        roots.append(walk(t["tree_structure"]))
+    return {"nf": int(dump["max_feature_idx"]) + 1, "f": F, "t": T, "l": L, "r": R, "v": V, "roots": roots}
+
+
+def _arrays(model):
+    a = model.get("_np")
+    if a is None:
+        a = model["_np"] = tuple(np.asarray(model[k], dtype=d) for k, d in
+                                 (("f", np.int64), ("t", float), ("l", np.int64), ("r", np.int64), ("v", float), ("roots", np.int64)))
+    return a
+
+
+def tree_probs(model, X):
+    """Probability from a packed tree model for every row of X (rows x features).
+    Features are rounded to single precision first - the precision the trees
+    were trained in - so every implementation takes the same branches."""
+    F, T, L, R, V, roots = _arrays(model)
+    X = np.asarray(X, dtype=np.float32).astype(float)
+    node = np.tile(roots, (len(X), 1))
+    rows = np.broadcast_to(np.arange(len(X))[:, None], node.shape)
+    act = node >= 0
+    while act.any():
+        nd = node[act]
+        node[act] = np.where(X[rows[act], F[nd]] <= T[nd], L[nd], R[nd])
+        act = node >= 0
+    raw = np.cumsum(V[-node - 1], axis=1)[:, -1]         # summed tree by tree, in order
+    return 1.0 / (1.0 + np.exp(-raw))
+
+
+def rev_rows(phi_top, phi_bottom, horizons):
+    """Model input for both sides and every call type: [top x horizons, bottom x horizons]."""
+    return np.array([list(phi) + [float(j)] for phi in (phi_top, phi_bottom) for j in horizons])

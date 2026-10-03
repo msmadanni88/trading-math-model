@@ -6,7 +6,9 @@ For every closed candle, strictly in time order:
      let every agent learn from the candle,
   3. periodically refit the heavier models,
   4. forecast the next candle: calibrated return distribution (teacher),
-     wick sizes, and the generated candle the site draws (student).
+     wick sizes, and the chain of generated candles the site draws (student);
+     once per HORIZON candles that chain is frozen as the fixed record,
+  5. let every reversal agent judge its old calls, learn, and make new ones.
 Evaluation is therefore always out-of-sample (prequential): a forecast is
 stored before its outcome exists.
 """
@@ -16,13 +18,13 @@ from . import student
 from .agents.learners import Lgbm
 from .agents.registry import forecast_agents, shape_agents, signal_agents
 from .agents.reversal import ReversalAgent
-from .config import (GRAN, HORIZON, LGBM_EVERY, RETRAIN_EVERY, REV_H, STUDENT_LEAD, STUDENT_ROWS,
+from .config import (GRAN, HORIZON, LGBM_EVERY, RETRAIN_EVERY, REV_KS, REV_TUNE_EVERY, STUDENT_LEAD, STUDENT_ROWS,
                      STUDENT_ROWS_H, STUDENT_STEP, STUDENT_WIN, TRAIN_WINDOW)
 from .core import BOCPD, QUANTILES, pinball
 from .features import feature_names
 from .goal import candle_score
 
-STATE_VERSION = 4            # bump when a change makes old saved state invalid
+STATE_VERSION = 5            # bump when a change makes old saved state invalid
 EXTRA = ["cp_prob", "log_run", "bocpd_lsd"]
 BP = 1e4
 NQ = len(QUANTILES)
@@ -199,16 +201,14 @@ class Engine:
         self.sS = Hist(STUDENT_ROWS_H)                    # volatility scale of each row
         self.oT = Hist(STUDENT_ROWS_H + 64, (), np.int64)  # what every candle actually did:
         self.oY = Hist(STUDENT_ROWS_H + 64, (3,))          #   return, reach up, reach down
-        self.versions = []                   # [{"eff", "W", "H", "scale", "cone", "n", "r2"}]
-        # candles 2..HORIZON: one goal tuner and one cone width per horizon
-        self.tuners_h = [GoalTuner() for _ in range(HORIZON - 1)]
-        self.cone = [float(np.sqrt(h)) for h in range(2, HORIZON + 1)]
+        self.versions = []                   # published parameter versions (see fit_student)
+        # one goal tuner and one cone width per candle of the chain; index h - 1
+        # (candle 1 is sized by self.tuner and its cone is the model's own range)
+        self.tuners_h = [GoalTuner() for _ in range(HORIZON)]
+        self.cone = [float(np.sqrt(h)) for h in range(1, HORIZON + 1)]
         self.multi = {}                      # target ts -> {h: what was generated h candles ahead}
-        # reversal agent and the rows its browser-side copy is distilled from
-        self.rev = ReversalAgent()
-        nr = len(student.REV_FEATURES)
-        self.rP = Hist(STUDENT_ROWS_H, (2, nr))
-        self.rL = Hist(STUDENT_ROWS_H, (2, REV_H + 1))
+        self.snap = {}                       # target ts -> its candle in the frozen chain (the fixed record)
+        self.rev = {K: ReversalAgent(K) for K in REV_KS}
         self.cum = 0.0                       # cumulative log return (to score the cones)
         self.simulate_publish = True         # replay mode: emulate a cloud run every STUDENT_STEP
 
@@ -224,9 +224,10 @@ class Engine:
             if info is not None:
                 entry[e.name] = info
         if self.n % every_l == 0:
-            info = self.rev.retrain()
-            if info is not None:
-                entry["reversal"] = info
+            for K, ag in self.rev.items():
+                info = ag.retrain(ts)
+                if info is not None:
+                    entry[ag.name] = info
         if len(entry) > 1:
             self.retrain_log.append(entry)
             self.retrain_log = self.retrain_log[-60:]
@@ -246,16 +247,16 @@ class Engine:
         W = rnd(student.fit(X, Y))            # rounded: the published numbers ARE the ones used
         res = Y - X @ W.T
         r2 = 1 - res.var(0) / np.maximum(Y.var(0), 1e-12)
-        # candles 2..HORIZON: learned from what the market really did. While
-        # replaying history these heads are refitted every 30 minutes instead
-        # of every 5 (the last ones are reused in between) to keep a rebuild fast.
+        # one head per candle 1..HORIZON, learned from what the market really
+        # did. While replaying history the heads are refitted every 30 minutes
+        # instead of every 5 (the last ones are reused in between) to keep a rebuild fast.
         prev = self.versions[-1] if self.versions else None
         if self.simulate_publish and prev is not None and prev.get("H") is not None and eff % 1800 != 0:
             H = prev["H"]
         else:
             H, oT, oY = [], self.oT.view(), self.oY.view()
             Xa, Sa = self.sX.view(), self.sS.view()
-            for h in range(2, HORIZON + 1):
+            for h in range(1, HORIZON + 1):
                 tt = T + (h - 1) * GRAN
                 idx = np.minimum(np.searchsorted(oT, tt), len(oT) - 1)
                 use = (oT[idx] == tt) & (tt <= cutoff_ts)
@@ -265,18 +266,13 @@ class Engine:
                 o = oY[idx[use]]
                 H.append(student.fit(Xa[use], student.outcome_targets(o[:, 0], o[:, 1], o[:, 2], Sa[use]), student.RIDGE_H))
             H = None if H is None else rnd(np.array(H))
-        # reversal agent: linear copy of its teacher (same refit rhythm as the heads above)
-        if self.simulate_publish and prev is not None and prev.get("R") is not None and eff % 1800 != 0:
-            R = prev["R"]
-        else:
-            Xr = self.rP.view()[ok][-STUDENT_ROWS:].reshape(-1, self.rP.a.shape[-1])
-            Yr = self.rL.view()[ok][-STUDENT_ROWS:].reshape(-1, REV_H + 1)
-            fin = np.isfinite(Yr).all(1)
-            R = rnd(student.fit(Xr[fin], Yr[fin])) if fin.sum() >= 2000 else None
         self.versions.append({
-            "eff": int(eff), "W": W, "H": H, "R": R, "rt": float(f"{self.rev.thr:.4g}"),
-            "scale": [[float(x) for x in t.scales()] for t in self.tuners_h],
-            "cone": [float(f"{c:.6g}") for c in self.cone],
+            "eff": int(eff), "fmt": student.FORMAT, "W": W, "H": H,
+            "scale": [[1.0, 1.0]] + [[float(x) for x in t.scales()] for t in self.tuners_h[1:]],
+            "cone": [1.0] + [float(f"{c:.6g}") for c in self.cone[1:]],
+            # reversal agents: which published tree model and which thresholds are in force
+            "rm": {str(K): int(ag.model_id) for K, ag in self.rev.items()},
+            "rt": {str(K): [float(f"{x:.4g}") for x in ag.thr] for K, ag in self.rev.items()},
             "n": int(len(X)), "r2": [round(float(x), 3) for x in r2]})
         self.versions = self.versions[-60:]
         return self.versions[-1]
@@ -286,12 +282,11 @@ class Engine:
         truth: a restored engine may be older than the last run)."""
         have = {v["eff"] for v in self.versions}
         for v in published:
-            if v["eff"] not in have:
-                self.versions.append({"eff": int(v["eff"]), "W": np.array(v["W"], float),
+            if v["eff"] not in have and v.get("fmt") == student.FORMAT:
+                self.versions.append({"eff": int(v["eff"]), "fmt": v["fmt"], "W": np.array(v["W"], float),
                                       "H": None if v.get("H") is None else np.array(v["H"], float),
-                                      "R": None if v.get("R") is None else np.array(v["R"], float),
-                                      "rt": v.get("rt"),
-                                      "scale": v.get("scale"), "cone": v.get("cone"), "n": 0, "r2": []})
+                                      "scale": v.get("scale"), "cone": v.get("cone"),
+                                      "rm": v.get("rm") or {}, "rt": v.get("rt") or {}, "n": 0, "r2": []})
         self.versions = sorted(self.versions, key=lambda v: v["eff"])[-60:]
 
     def version_at(self, ts):
@@ -314,6 +309,7 @@ class Engine:
             return None
         r = float(np.log(c / pc))
         ao, ah, al = float(np.log(o / pc)), float(np.log(h / pc)), float(np.log(l / pc))
+        cum_before = self.cum                # where the market stood before this candle
         self.cum += r
         self.oT.add(int(ts))
         self.oY.add([r, max(ah, 0.0), max(-al, 0.0)])
@@ -347,24 +343,33 @@ class Engine:
             self.calib.update(P["cal"], r)
             if P["base"] is not None:
                 self.tuner.update(P["base"], ao, r, ah, al)
-            # candles that were generated 2..HORIZON minutes before this one
+            # candles that were generated 2..HORIZON minutes before this one:
+            # score, colour and range of each, and feedback to that candle's tuner
             ahead = self.multi.pop(int(ts), {})
             for hz in range(2, HORIZON + 1):
                 e = ahead.get(hz)
                 if e is None:
-                    row.update({f"g{hz}_b": np.nan, f"g{hz}_u": np.nan, f"g{hz}_d": np.nan, f"c{hz}_in": np.nan})
-                    if hz == HORIZON:
-                        row["g5_o"] = np.nan
+                    row.update({f"s{hz}": np.nan, f"d{hz}": np.nan, f"c{hz}_in": np.nan})
                     continue
-                if hz == HORIZON:
-                    row["g5_o"] = e["o"]            # where that candle opens, relative to the close it was made from
                 inside = e["lo"] <= self.cum - e["cum0"] <= e["hi"]
-                row.update({f"g{hz}_b": e["b"], f"g{hz}_u": e["u"], f"g{hz}_d": e["d"], f"c{hz}_in": float(inside)})
-                # feedback: the goal tuner and the cone width of that horizon learn from the result
-                self.tuners_h[hz - 2].update(e["base"], ao, r, ah, al)
-                self.cone[hz - 2] *= float(np.exp(0.02 * ((not inside) - 0.10)))
+                sc = candle_score(e["b"], e["u"], e["d"], ao, r, ah, al)[2]
+                row.update({f"s{hz}": round(float(sc), 4), f"d{hz}": np.nan if r == 0 else float((e["b"] > 0) == (r > 0)),
+                            f"c{hz}_in": float(inside)})
+                self.tuners_h[hz - 1].update(e["base"], ao, r, ah, al)
+                self.cone[hz - 1] *= float(np.exp(0.02 * ((not inside) - 0.10)))
+            # the fixed record: this minute's candle in the chain that was frozen
+            # at the start of its quarter hour. lk_r is where the real market
+            # stood (its previous close) relative to the close the chain started from.
+            e = self.snap.pop(int(ts), None)
+            if e is None:
+                row.update({"lk_h": np.nan, "lk_o": np.nan, "lk_b": np.nan, "lk_u": np.nan, "lk_d": np.nan, "lk_r": np.nan})
+            else:
+                row.update({"lk_h": e["h"], "lk_o": e["o"], "lk_b": e["b"], "lk_u": e["u"], "lk_d": e["d"],
+                            "lk_r": cum_before - e["cum0"]})
         for k in [k for k in self.multi if k <= int(ts)]:
             del self.multi[k]
+        for k in [k for k in self.snap if k <= int(ts)]:
+            del self.snap[k]
         if P is not None and P["x"] is not None and P["sigma"]:
             self.X.add(P["x"])
             self.z.add(np.clip(r / P["sigma"], -10, 10))
@@ -386,6 +391,9 @@ class Engine:
         # 3) periodic refit
         if self.n % RETRAIN_EVERY == 0:
             self._retrain(ts)
+        if self.n % REV_TUNE_EVERY == 0:
+            for ag in self.rev.values():
+                ag.tune()
 
         # 4) forecast the next candle
         sigma = None if self.var_fast is None else float(np.sqrt(self.var_fast))
@@ -404,16 +412,28 @@ class Engine:
             q = e.predict(ctx)
             if q is not None and np.all(np.isfinite(q)):
                 exp_q[e.name] = np.asarray(q, float)
-        # reversal agent: learn from the swing label that just became known, then look ahead
-        f = sig = phi_t = phi_b = rev_teacher = None
+        f = sig = cv = None
         if len(self.candles) == STUDENT_WIN + 1:
             cv = self.candles.view()
             f, sig = student.compact(cv, nxt)
-            phi_t, phi_b = student.rev_features(cv, f, sig, 1), student.rev_features(cv, f, sig, -1)
-        self.rev.observe(h, l, phi_t, phi_b)
-        self.rev.settle(int(ts), GRAN)
-        if phi_t is not None:
-            rev_teacher = self.rev.predict(phi_t, phi_b)
+        if self.simulate_publish and nxt % STUDENT_STEP == 0:      # replay: emulate the cloud run that
+            self.fit_student(nxt, nxt - STUDENT_LEAD)              # published the version effective now
+        ver = self.version_at(nxt)
+
+        # 5) reversal agents: judge, learn, then speak with the published model
+        for K, ag in self.rev.items():
+            phi_t = phi_b = None
+            if f is not None:
+                phi_t, phi_b = student.rev_features(cv, f, sig, 1, K), student.rev_features(cv, f, sig, -1, K)
+            ag.observe(int(ts), GRAN, h, l, phi_t, phi_b)
+            mid = (ver.get("rm") or {}).get(str(K)) if ver is not None else None
+            pr = ag.probs(mid, phi_t, phi_b)
+            ag.record(pr)
+            if pr is not None:
+                ag.call(int(ts), GRAN, pr, (ver.get("rt") or {}).get(str(K)), c, mid)
+            if row is not None:
+                v = [np.nan] * 4 if pr is None else [round(float(x), 3) for x in pr.ravel()]
+                row.update({f"r{K}_tn": v[0], f"r{K}_tx": v[1], f"r{K}_bn": v[2], f"r{K}_bx": v[3]})
 
         P = {"x": x, "sigma": sigma, "exp_q": exp_q, "w": {}, "ens": None, "cal": None, "p_up": float("nan"),
              "cp_prob": cp, "exp_run": er, "for_ts": nxt, "teacher_gen": None, "gen": None, "base": None, "path": None}
@@ -433,22 +453,16 @@ class Engine:
                 self.sY.add(student.teacher_targets(P["p_up"], a, e_up, e_dn, cal[0], cal[2], cal[6], cal[8], sig))
                 self.sT.add(nxt)
                 self.sS.add(sig)
-                self.rP.add(np.vstack([phi_t, phi_b]))
-                pt = np.clip(rev_teacher, 1e-3, 1 - 1e-3)
-                self.rL.add(np.log(pt / (1 - pt)) if self.rev.ready() else np.nan)
-                if self.simulate_publish and nxt % STUDENT_STEP == 0:
-                    self.fit_student(nxt, nxt - STUDENT_LEAD)
-                ver = self.version_at(nxt)
                 if ver is not None:
                     path = student.generate_path(ver, f, sig)
                     P["gen"] = dict(path[0], eff=ver["eff"])
                     for j, g in enumerate(path[1:]):
-                        base = student.horizon_raw(ver["H"][j], f, sig)[:4]
                         self.multi.setdefault(nxt + (j + 1) * GRAN, {})[j + 2] = dict(
-                            b=g["b"], u=g["u"], d=g["d"], o=g["o"], lo=g["lo"], hi=g["hi"], base=base, cum0=self.cum)
+                            b=g["b"], u=g["u"], d=g["d"], lo=g["lo"], hi=g["hi"], base=g["raw"], cum0=self.cum)
                     P["path"] = path
-                    if ver.get("R") is not None:       # official reversal calls, from the published copy
-                        probs = np.vstack([student.rev_probs(ver["R"], phi_t), student.rev_probs(ver["R"], phi_b)])
-                        self.rev.call(int(ts), GRAN, probs, ver["rt"], ver["eff"])
+                    if nxt % (HORIZON * GRAN) == 0 and len(path) == HORIZON:
+                        # a quarter hour starts: freeze this chain as the fixed record
+                        self.snap = {nxt + i * GRAN: dict(h=i + 1, o=g["o"], b=g["b"], u=g["u"], d=g["d"], cum0=self.cum)
+                                     for i, g in enumerate(path)}
         self.pending = P
         return row

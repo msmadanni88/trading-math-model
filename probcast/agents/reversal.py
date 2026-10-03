@@ -1,57 +1,85 @@
-"""Reversal agent: where will the next turning points be?
+"""Reversal agents: where are the turning points?
 
-DEFINITION. Candle s is a swing high of order K if its high is the highest of
+DEFINITION. Candle s is a swing high of size K if its high is the highest of
 the K candles before it and the K candles after it (swing low: mirrored).
-The agent estimates, after every candle t and for every j = 0..H,
+There is one agent per swing size K (config.REV_KS): small K = every little
+turn, large K = only the turns that matter for a quarter of an hour.
 
-    p_top[j]    = P(a swing high forms within one candle of candle t+j | known at t)
-    p_bottom[j] = P(a swing low  forms within one candle of candle t+j | known at t)
+WHAT AN AGENT SAYS. After every candle t it gives, for tops and for bottoms,
 
-j = 0 is the candle that has just closed ("the turn is in": it cannot be
-confirmed for another K candles); j >= 1 are candles that have not started.
-This is exactly the event a call is judged on, so the models are trained on
-the goal itself. A bottom is a top of the mirrored price, so both sides share
-one model and every candle gives two training examples.
+    now   P(a swing point forms at candle t-1, t or t+1)     "the turn is in"
+    next  P(a swing point forms at candle t+1, t+2 or t+3)   "a turn is coming"
 
-MODELS (the "teacher"), each learning from every resolved swing label:
-  base    running frequency per horizon (what chance alone gives)
-  logit   online logistic regression, one Adagrad step per label
-  trees   LightGBM classifier on a rolling 10-day window, daily
-          champion / challenger on unseen log-loss
-They are mixed by Hedge on log-loss, so whichever has been predicting swing
-points better lately gets the weight.
+Neither can be read off the chart at time t: a swing point is only confirmed
+K candles later. "next" names minutes that have not started at all.
 
-GOAL. The agent may "call" a swing point on about REV_BUDGET of the minutes
-(a threshold that tracks that budget online). A call names a side and a
-minute; it is a hit if a swing point of that side forms within one candle of
-that minute. The goal is the hit rate of the calls, judged against the chance
-level - how often a swing point sits there anyway. Every call is stored when
-it is made and never edited; only its outcome is filled in later.
+MODEL. A gradient-boosted tree classifier (LightGBM) on what the last candles
+look like relative to the recent extremes (student.rev_features). A bottom is
+a top of the mirrored price, so both sides share one model and every candle
+gives two training examples. The fitted trees are published as plain numbers;
+the site walks the same trees, so a call made in the browser and the call the
+cloud stores are the same call.
+
+SELF-TRAINING. Every swing label that becomes known is a new training row.
+Once a day a challenger is trained and replaces the champion only if it
+predicts the latest two days - which it never saw - better. If the hit rate
+of the calls has been falling, the daily contest widens: several challengers
+with different memory and complexity compete instead of one.
+
+GOAL. The hit rate of the calls. A call is made when the probability is at
+least the agent's confidence threshold, and it is a hit if a swing point of
+that side forms within one candle of the minute it names. Calls of one type
+and side never name minutes closer than three candles apart. Every six hours the
+agent re-picks the threshold that gave the best hit rate over its last seven
+days among those that still make REV_MIN_PER_DAY calls a day - it may become
+pickier, but it may not go silent. A call is stored when it is made and never
+edited; only its outcome is filled in.
 
 A label is only known K + 1 candles after its candle, so all learning here is
-delayed by up to K + H + 1 candles; nothing ever uses a candle that has not closed.
+delayed by a few candles; nothing ever uses a candle that has not closed.
 """
 import numpy as np
 
-from ..config import LGBM_EMBARGO, LGBM_HOLDOUT, REV_BUDGET, REV_H, REV_K, REV_TRAIN
-from ..student import REV_FEATURES
+from .. import student
+from ..config import LGBM_EMBARGO, LGBM_HOLDOUT, REV_HS, REV_MIN_PER_DAY, REV_TRAIN, REV_TUNE_WIN
 
-D = len(REV_FEATURES)
-LGB_PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=12, min_data_in_leaf=300,
-                  feature_fraction=0.8, bagging_fraction=0.7, bagging_freq=1, lambda_l2=5.0,
-                  verbose=-1, seed=11, deterministic=True, force_col_wise=True, num_threads=2)
-LGB_ROUNDS = 80
-EXPERTS = ("base", "logit", "trees")
-NH = REV_H + 1                     # horizons 0..H
-
-
-def _sig(z):
-    return 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+D = len(student.REV_FEATURES)
+NH = len(REV_HS)
+HMAX = max(REV_HS)
+TYPES = ("now", "next")
+LGB_BASE = dict(objective="binary", learning_rate=0.05, num_leaves=16, min_data_in_leaf=250,
+                feature_fraction=0.8, bagging_fraction=0.7, bagging_freq=1, lambda_l2=5.0,
+                verbose=-1, seed=11, deterministic=True, force_col_wise=True, num_threads=2)
+# the daily contest: one challenger normally, all three when the hit rate has been falling
+CONTEST = [dict(rows=REV_TRAIN, rounds=100),
+           dict(rows=REV_TRAIN // 2, rounds=80, num_leaves=12),
+           dict(rows=REV_TRAIN, rounds=160, num_leaves=31, learning_rate=0.03, min_data_in_leaf=150)]
+RATES = (1.0, 1.25, 1.6, 2.0, 2.6, 3.4, 4.5, 6.0, 8.0)       # thresholds tried: these multiples of the minimum call rate
 
 
 def _logloss(p, y):
     p = np.clip(p, 1e-4, 1 - 1e-4)
     return -(y * np.log(p) + (1 - y) * np.log(1 - p))
+
+
+def wilson_low(hits, n, z=1.64):
+    """Lower end of the confidence interval of a hit rate: a threshold is
+    preferred only if it is better beyond what luck explains."""
+    if n == 0:
+        return 0.0
+    p = hits / n
+    return (p + z * z / (2 * n) - z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / (1 + z * z / n)
+
+
+def spaced(idx, gap=2):
+    """Calls of one side cannot name minutes within `gap` candles of each
+    other: keep the first of every such cluster (idx sorted ascending)."""
+    keep, last = [], -10 ** 9
+    for i in idx:
+        if i - last > gap:
+            keep.append(i)
+            last = i
+    return keep
 
 
 class _Ring:
@@ -70,195 +98,259 @@ class _Ring:
 
 
 class ReversalAgent:
-    name = "reversal"
     role = "reversal"
 
-    def __init__(self):
-        n = 4 * (REV_K + REV_H)
-        self.hl = _Ring(n, (2,))                    # high, low of the latest candles
-        self.phi = _Ring(n, (2, D))                 # features, [top, bottom]
-        self.pred = _Ring(n, (len(EXPERTS) + 1, 2, NH))      # what each expert (+ the mix) said
-        self.lab = _Ring(n, (2,))                   # is candle t-K a swing point [top, bottom]
-        self.lab3 = _Ring(n, (2,))                  # ... is there one within a candle of candle t-K-1
+    def __init__(self, K):
+        self.K = K
+        self.name = f"reversal_k{K}"
+        self.lag = K + 1 + HMAX                     # candles until every label of an origin is known
+        self.hl = _Ring(2 * K + 2, (2,))            # high, low of the latest candles
+        self.phi = _Ring(self.lag + 2, (2, D))      # features, [top, bottom]
+        self.lab = _Ring(4, (2,))                   # is candle t-K a swing point [top, bottom]
+        self.lab3 = _Ring(HMAX + 2, (2,))           # ... is there one within a candle of candle t-K-1
         self.n = 0
-        # online logistic regression (one weight vector per horizon)
-        self.W = np.zeros((NH, D))
-        self.G = np.full((NH, D), 1e-2)
         self.n_fit = 0
-        self.base = np.full(NH, 0.2)
-        self.L = np.zeros(len(EXPERTS))             # discounted log-loss per expert (Hedge)
-        self.scale = 0.3
-        # rolling training set of the tree model
+        # rolling training set of the tree model (two rows per candle: top, bottom)
         self.tX = np.zeros((2 * 2 * REV_TRAIN, D), dtype=np.float32)
         self.tY = np.zeros((2 * 2 * REV_TRAIN, NH), dtype=np.float32)
         self.tn = 0
-        self.model, self._boost = None, None
-        # running quality (exponentially weighted): Brier of the mix and of chance
-        self.brier = np.zeros(2)
-        self.thr = 0.35                             # call threshold (tracks the budget)
-        self.calls = {}                             # (for_ts, side) -> call awaiting its outcome
-        self.recent = {}                            # (for_ts, side) -> True, for de-duplication
+        self.model_str, self.model_id, self._boost = None, 0, None
+        self.models = {}                            # id -> packed trees (what is published)
+        # what the published model said on each of the last REV_TUNE_WIN candles, and what happened
+        self.hP = np.full((REV_TUNE_WIN, 2, NH), np.nan)
+        self.hY = np.full((REV_TUNE_WIN, 2, NH), np.nan)
+        self.thr = [0.60, 0.45]                     # confidence thresholds [now, next]
+        self.tuned = None                           # how the thresholds were last picked
+        self.base = np.full(NH, 0.2)                # how often the event happens anyway (chance)
+        self.calls = {}                             # (for_ts, side, type) -> call awaiting its outcome
+        self.recent = {}                            # (for_ts, side, type) -> True, for de-duplication
         self.events = []                            # new calls / outcomes since the last drain
-        self.hit_rate, self.base_rate, self.n_calls = 0.0, 0.0, 0
+        self.count = np.zeros(NH)                   # judged calls per type
+        self.hits = np.zeros(NH)
+        self.fast = np.full(NH, np.nan)             # recent hit rate (about the last 60 calls)
+        self.slow = np.full(NH, np.nan)             # long-run hit rate (about the last 600 calls)
+        self.brier = np.zeros(2)                    # running Brier score: model, chance
 
     def __getstate__(self):
         s = dict(self.__dict__)
         s["_boost"] = None
+        s["models"] = {k: {a: b for a, b in m.items() if a != "_np"} for k, m in self.models.items()}
         return s
 
-    # ------------------------------------------------------------------ models
+    # ------------------------------------------------------------------ model
     def _booster(self):
-        if self._boost is None and self.model is not None:
+        if self._boost is None and self.model_str is not None:
             import lightgbm as lgb
-            self._boost = lgb.Booster(model_str=self.model)
+            self._boost = lgb.Booster(model_str=self.model_str)
         return self._boost
 
     @staticmethod
     def _stack(X):
-        """(n, D) -> (n * H, D + 1): one row per horizon, horizon as a feature."""
-        n = len(X)
-        j = np.tile(np.arange(NH, dtype=np.float32), n)[:, None]
+        """(n, D) -> (n * NH, D + 1): one row per call type, the type's horizon as the last feature."""
+        j = np.tile(np.asarray(REV_HS, dtype=np.float32), len(X))[:, None]
         return np.hstack([np.repeat(X, NH, axis=0), j])
 
-    def _weights(self):
-        ready = np.array([True, self.n_fit >= 2000, self.model is not None])
-        w = np.exp(-0.5 * (self.L - self.L[ready].min())) * ready
-        w = w / w.sum()
-        return 0.97 * w + 0.03 * ready / ready.sum()
+    def stalled(self):
+        """True when the recent hit rate of either call type has dropped below its long-run level."""
+        ok = (self.count >= 300) & np.isfinite(self.fast) & np.isfinite(self.slow)
+        return bool(np.any(ok & (self.fast < self.slow - 0.03)))
 
-    def predict(self, phi_top, phi_bottom):
-        """Teacher probabilities, shape (2, H + 1): [top, bottom] x horizon 0..H."""
-        X = np.vstack([phi_top, phi_bottom])
-        P = np.empty((len(EXPERTS) + 1, 2, NH))
-        P[0] = self.base[None, :]
-        P[1] = _sig(X @ self.W.T) if self.n_fit >= 2000 else P[0]
-        b = self._booster()
-        P[2] = b.predict(self._stack(X.astype(np.float32))).reshape(2, NH) if b is not None else P[0]
-        w = self._weights()
-        P[3] = np.tensordot(w, P[:3], axes=1)
-        self.pred.a[-1] = P
-        return P[3]
-
-    def ready(self):
-        return self.n_fit >= 2000
-
-    def retrain(self, hist=None):
-        """Daily: train a challenger tree model; keep it only if it beats the
-        champion on the latest two days, which it never saw."""
+    def retrain(self, ts):
+        """Daily contest. Challengers are trained on everything except the
+        latest two days and judged on those two days; the best one replaces
+        the champion only if it beats it there."""
         import lightgbm as lgb
-        n = min(self.tn, 2 * REV_TRAIN)
         hold = 2 * LGBM_HOLDOUT
-        if n < 3 * hold:
+        if self.tn < 3 * hold:
             return None
-        X, Y = self.tX[self.tn - n:self.tn], self.tY[self.tn - n:self.tn]
-        cut = n - hold
-        Xtr, ytr = self._stack(X[:cut - 2 * LGBM_EMBARGO]), Y[:cut - 2 * LGBM_EMBARGO].ravel()
-        Xho, yho = self._stack(X[cut:]), Y[cut:].ravel()
-        cand = lgb.train(LGB_PARAMS, lgb.Dataset(Xtr, label=ytr, free_raw_data=False), num_boost_round=LGB_ROUNDS)
-        l_c = float(_logloss(cand.predict(Xho), yho).mean())
-        info = {"challenger_loss": round(l_c, 5), "chance_loss": round(float(_logloss(ytr.mean(), yho).mean()), 5)}
+        wide = self.stalled()
+        Xho, yho = self._stack(self.tX[self.tn - hold:self.tn]), self.tY[self.tn - hold:self.tn].ravel()
+        best, tried = None, []
+        for cfg in (CONTEST if wide else CONTEST[:1]):
+            cfg = dict(cfg)
+            rows, rounds = 2 * cfg.pop("rows"), cfg.pop("rounds")
+            lo = max(0, self.tn - hold - rows)
+            hi = self.tn - hold - 2 * LGBM_EMBARGO
+            m = lgb.train(dict(LGB_BASE, **cfg), lgb.Dataset(self._stack(self.tX[lo:hi]), label=self.tY[lo:hi].ravel(),
+                                                             free_raw_data=False), num_boost_round=rounds)
+            loss = float(_logloss(m.predict(Xho), yho).mean())
+            tried.append(round(loss, 5))
+            if best is None or loss < best[0]:
+                best = (loss, m)
+        info = {"challenger_loss": round(best[0], 5), "challengers": len(tried),
+                "chance_loss": round(float(_logloss(self.tY[:self.tn - hold].mean(), yho).mean()), 5),
+                "widened": wide}
         cur = self._booster()
         if cur is not None:
             l_o = float(_logloss(cur.predict(Xho), yho).mean())
             info["champion_loss"] = round(l_o, 5)
-            info["promoted"] = bool(l_c < l_o)
+            info["promoted"] = bool(best[0] < l_o)
             if not info["promoted"]:
                 return info
         else:
             info["promoted"] = True
-        self.model, self._boost = cand.model_to_string(), cand
+        self.model_str, self._boost = best[1].model_to_string(), best[1]
+        self.model_id = int(ts)
+        self.models[self.model_id] = student.pack_trees(best[1].dump_model())
+        for k in sorted(self.models)[:-3]:              # the last three stay available to the site
+            del self.models[k]
         return info
 
+    def probs(self, model_id, phi_top, phi_bottom):
+        """What the published model `model_id` says: array (2 sides, NH types), or None."""
+        m = self.models.get(model_id)
+        if m is None or phi_top is None:
+            return None
+        return student.tree_probs(m, student.rev_rows(phi_top, phi_bottom, REV_HS)).reshape(2, NH)
+
     # ------------------------------------------------------------------ one candle
-    def observe(self, high, low, phi_top, phi_bottom):
-        """Called once per closed candle, BEFORE predict() for that candle.
-        Resolves the swing label that just became known and learns from it."""
+    def observe(self, ts, gran, high, low, phi_top, phi_bottom):
+        """Called once per closed candle, before anything is said about it.
+        Resolves the swing label that just became known, judges the calls
+        that named it and adds the training row whose labels are complete."""
+        K = self.K
         self.hl.push([high, low])
         self.phi.push(np.vstack([phi_top, phi_bottom]) if phi_top is not None else np.nan)
-        self.pred.push(np.nan)                         # filled in by predict() for this candle
         self.n += 1
-        if self.n < 2 * REV_K + 1:
+        pos = (self.n - 1) % REV_TUNE_WIN
+        self.hP[pos] = np.nan
+        self.hY[pos] = np.nan
+        if self.n < 2 * K + 1:
             self.lab.push(np.nan)
             self.lab3.push(np.nan)
-            return None
-        w = self.hl.a[-(2 * REV_K + 1):]
-        s = w[REV_K]                                   # candle t-K: now K candles on each side are known
-        y = np.array([float(s[0] >= w[:, 0].max()), float(s[1] <= w[:, 1].min())])
-        self.lab.push(y)
-        self.lab3.push(self.lab.a[-3:].max(0))         # centre t-K-1: a swing among t-K-2, t-K-1, t-K
-        # the row whose labels are all known now: forecast origin o = t - K - 1 - H
-        Y = self.lab3.a[-NH:].T                        # (2 sides, H + 1)  centres o .. o+H
-        o = REV_K + 1 + REV_H
-        X, P = self.phi.back(o), self.pred.back(o)
+            return
+        w = self.hl.a[-(2 * K + 1):]
+        s = w[K]                                       # candle t-K: now K candles on each side are known
+        self.lab.push([float(s[0] >= w[:, 0].max()), float(s[1] <= w[:, 1].min())])
+        l3 = self.lab.a[-3:].max(0)                    # centre t-K-1: a swing among t-K-2, t-K-1, t-K
+        self.lab3.push(l3)
+        if not np.all(np.isfinite(l3)):
+            return
+        # calls that named candle t-K-1 can be judged now
+        target = int(ts - (K + 1) * gran)
+        for side, sgn, a in ((0, 1, 0), (0, 1, 1), (1, -1, 0), (1, -1, 1)):
+            c = self.calls.pop((target, sgn, a), None)
+            if c is not None:
+                hit = float(l3[side])
+                self.count[a] += 1
+                self.hits[a] += hit
+                n = self.count[a]                      # plain average until enough calls, then a moving one
+                self.fast[a] = hit if n == 1 else self.fast[a] + (hit - self.fast[a]) / min(n, 60)
+                self.slow[a] = hit if n == 1 else self.slow[a] + (hit - self.slow[a]) / min(n, 600)
+                self.events.append(("hit", (target, self.K, sgn, a, int(hit))))
+        for store in (self.recent, self.calls):         # forget what can no longer matter
+            for k in [k for k in store if k[0] < target - 3 * gran]:
+                del store[k]
+        # the origin whose labels are all known now: t - lag
+        Y = np.array([self.lab3.back(HMAX - j) for j in REV_HS]).T      # (2 sides, NH)
+        X = self.phi.back(self.lag)
         if not (np.all(np.isfinite(Y)) and np.all(np.isfinite(X))):
-            return y
-        if np.all(np.isfinite(P)):                     # score what each expert said for this row
-            loss = np.array([_logloss(P[e], Y).mean() for e in range(len(EXPERTS))])
-            self.scale += 0.001 * (loss[0] - self.scale)           # typical loss of chance
-            self.L = 0.999 * self.L + loss / self.scale
+            return
+        op = (self.n - 1 - self.lag) % REV_TUNE_WIN
+        self.hY[op] = Y
+        P = self.hP[op]
+        if np.all(np.isfinite(P)):
             k = 0.0005
-            self.brier += k * (np.array([((P[3] - Y) ** 2).mean(), ((self.base[None, :] - Y) ** 2).mean()]) - self.brier)
-        for side in (0, 1):                            # online logistic regression step
-            g = (_sig(X[side] @ self.W.T) - Y[side])[:, None] * X[side][None, :] + 1e-4 * self.W
-            self.G += g * g
-            self.W -= 0.05 * g / np.sqrt(self.G)
-        self.n_fit += 1
+            self.brier += k * (np.array([((P - Y) ** 2).mean(), ((self.base[None, :] - Y) ** 2).mean()]) - self.brier)
         self.base += 0.0005 * (Y.mean(0) - self.base)
-        if self.tn + 2 > len(self.tX):                 # rolling training set of the tree model
+        if self.tn + 2 > len(self.tX):                 # rolling training set
             keep = 2 * REV_TRAIN
             self.tX[:keep], self.tY[:keep] = self.tX[self.tn - keep:self.tn], self.tY[self.tn - keep:self.tn]
             self.tn = keep
         self.tX[self.tn:self.tn + 2], self.tY[self.tn:self.tn + 2] = X, Y
         self.tn += 2
-        return y
+        self.n_fit += 1
 
-    # ------------------------------------------------------------------ calls
-    def call(self, ts, gran, probs, thr, eff):
-        """ts: the candle that just closed. probs: official (published)
-        probabilities (2, H + 1) for the candles ts, ts + gran, ...
-        Issues at most one call per side."""
+    def record(self, P):
+        """P: what the published model said after this candle (2, NH) or None."""
+        self.hP[(self.n - 1) % REV_TUNE_WIN] = np.nan if P is None else P
+
+    def call(self, ts, gran, P, thr, close, model_id):
+        """ts: the candle that just closed. P: probabilities of the published
+        model `model_id` (2, NH). thr: published thresholds [now, next].
+        The two call types are separate records: a turn can first be called
+        as coming and then, when it happens, as in."""
         out = []
+        if P is None or thr is None:
+            return out
         for side, sgn in ((0, 1), (1, -1)):
-            j = int(np.argmax(probs[side]))
-            p = float(probs[side][j])
-            self.thr += 0.002 * ((p >= self.thr) - REV_BUDGET)      # threshold tracks the call budget
-            self.thr = float(min(max(self.thr, 0.12), 0.95))
-            if p < thr:
-                continue
-            for_ts = int(ts + j * gran)
-            if any((for_ts + d * gran, sgn) in self.recent for d in (-2, -1, 0, 1, 2)):
-                continue                                           # that turning point is already called
-            known = self.hl.a[-(REV_K - j + 1):, side]              # candles of its window that have closed
-            level = float(known.max() if sgn > 0 else known.min())
-            c = {"made_ts": int(ts + gran), "for_ts": for_ts, "side": sgn, "p": round(p, 4),
-                 "level": round(level, 2), "eff": int(eff)}
-            self.calls[(for_ts, sgn)] = c
-            self.recent[(for_ts, sgn)] = True
-            self.events.append(("new", c))
-            out.append(c)
+            for a, j in enumerate(REV_HS):
+                p = float(P[side, a])
+                if not p >= thr[a]:
+                    continue
+                for_ts = int(ts + j * gran)
+                if any((for_ts + d * gran, sgn, a) in self.recent for d in (-2, -1, 0, 1, 2)):
+                    continue                           # that turning point is already called (same call type)
+                if j == 0:                             # the extreme of the turn that is in
+                    lv = self.hl.a[-2:, side]
+                    level = float(np.nanmax(lv) if sgn > 0 else np.nanmin(lv))
+                else:                                  # not printed yet: marked at the last price
+                    level = float(close)
+                c = {"made_ts": int(ts + gran), "for_ts": for_ts, "k": self.K, "side": sgn, "typ": a,
+                     "p": round(p, 4), "level": round(level, 2), "model": int(model_id)}
+                self.calls[(for_ts, sgn, a)] = c
+                self.recent[(for_ts, sgn, a)] = True
+                self.events.append(("new", c))
+                out.append(c)
         return out
 
-    def settle(self, ts, gran):
-        """ts: the candle that just closed. The call for candle ts - (K+1)*gran
-        can be judged now: its own swing label and both neighbours' exist."""
-        target = int(ts - (REV_K + 1) * gran)
-        lab3 = self.lab3.a[-1]
-        if np.all(np.isfinite(lab3)):
-            for side, sgn in ((0, 1), (1, -1)):
-                self.base_rate += 0.0005 * (lab3[side] - self.base_rate)
-                c = self.calls.pop((target, sgn), None)
-                if c is not None:
-                    self.n_calls += 1
-                    self.hit_rate += 0.01 * (lab3[side] - self.hit_rate)
-                    self.events.append(("hit", (target, sgn, int(lab3[side]))))
-        for k in [k for k in self.recent if k[0] < target - 3 * gran]:
-            del self.recent[k]
-        for k in [k for k in self.calls if k[0] < target - 3 * gran]:   # could not be judged (gap)
-            del self.calls[k]
+    # ------------------------------------------------------------------ self-tuning
+    def history(self):
+        """(P, Y) of the last REV_TUNE_WIN candles in time order."""
+        k = self.n % REV_TUNE_WIN
+        return np.roll(self.hP, -k, axis=0), np.roll(self.hY, -k, axis=0)
+
+    @staticmethod
+    def simulate(P, Y, a, thr):
+        """Calls of type `a` the threshold would have produced on a history:
+        (number, hits). Only minutes whose outcome is known count."""
+        n = h = 0
+        for side in (0, 1):
+            ok = np.isfinite(Y[:, side, a]) & (P[:, side, a] >= thr)
+            idx = spaced(np.nonzero(ok)[0])
+            n += len(idx)
+            h += float(Y[idx, side, a].sum()) if idx else 0.0
+        return n, h
+
+    def tune(self):
+        """Re-pick the thresholds: best hit rate (beyond luck) over the last
+        seven days among thresholds that keep at least REV_MIN_PER_DAY calls a day."""
+        P, Y = self.history()
+        info = {}
+        for a in range(NH):
+            known = np.isfinite(Y[:, :, a]) & np.isfinite(P[:, :, a])
+            days = known[:, 0].sum() / 1440.0
+            if days < 2.0:
+                continue
+            p = np.sort(P[:, :, a][known])
+            tried = []
+            for mult in RATES:
+                want = int(REV_MIN_PER_DAY * mult * days)
+                if want >= len(p):
+                    break
+                thr = float(p[-want - 1])
+                n, h = self.simulate(P, Y, a, thr)
+                tried.append((wilson_low(h, n), thr, n, h))
+            if not tried:
+                continue
+            enough = [t for t in tried if t[2] / days >= REV_MIN_PER_DAY]
+            best = max(enough) if enough else max(tried, key=lambda t: t[2])
+            new = float(min(max(0.5 * self.thr[a] + 0.5 * best[1], 0.05), 0.98))
+            info[TYPES[a]] = {"threshold": round(new, 4), "calls_per_day": round(best[2] / days, 1),
+                              "hit_rate": round(best[3] / max(best[2], 1), 4)}
+            self.thr[a] = new
+        if info:
+            self.tuned = info
+        return info
 
     def summary(self):
-        w = self._weights()
-        return {"weights": {e: round(float(x), 3) for e, x in zip(EXPERTS, w)},
-                "brier_skill": round(float(1 - self.brier[0] / self.brier[1]), 4) if self.brier[1] > 0 else None,
-                "threshold": round(self.thr, 3), "labels_learned": int(self.n_fit),
-                "chance_per_horizon": [round(float(b), 3) for b in self.base]}
+        out = {"k": self.K, "model_id": int(self.model_id), "labels_learned": int(self.n_fit),
+               "brier_skill": round(float(1 - self.brier[0] / self.brier[1]), 4) if self.brier[1] > 0 else None,
+               "stalled": self.stalled(), "types": {}}
+        for a, t in enumerate(TYPES):
+            out["types"][t] = {"threshold": round(float(self.thr[a]), 4), "chance": round(float(self.base[a]), 4),
+                               "calls": int(self.count[a]),
+                               "hit_rate": round(float(self.hits[a] / self.count[a]), 4) if self.count[a] else None,
+                               "recent": None if not np.isfinite(self.fast[a]) else round(float(self.fast[a]), 4),
+                               "long_run": None if not np.isfinite(self.slow[a]) else round(float(self.slow[a]), 4)}
+        return out

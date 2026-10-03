@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Candle Generator · live</title>
-<meta name="description" content="A self-learning model generates the next one-minute candle before it happens; the real market is drawn over it, live.">
+<meta name="description" content="Self-learning models generate the next one-minute candles and call turning points before they happen; the real market is drawn over them, live.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%275%27 y=%271%27 width=%276%27 height=%2714%27 rx=%271%27 fill=%27none%27 stroke=%27%233987e5%27 stroke-width=%271.5%27/%3E%3Crect x=%276.5%27 y=%276%27 width=%273%27 height=%277%27 fill=%27%23199e70%27/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -14,7 +14,7 @@
     <span class="mark" aria-hidden="true"></span>
     <div>
       <h1><span id="product">ETH-USD</span> <small>1-minute candle generator</small></h1>
-      <p class="sub">The model draws the next candle before the minute starts. The real market is drawn over it.</p>
+      <p class="sub">The model draws the next candles before they happen. The real market is drawn over them.</p>
     </div>
   </div>
   <div class="ticker">
@@ -33,9 +33,9 @@
       <label class="chip"><input type="checkbox" id="t-real" checked>
         <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-up"/><rect x="3" y="5" width="8" height="8" class="f-up"/></svg>real</label>
       <label class="chip"><input type="checkbox" id="t-gen" checked>
-        <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-gen"/><line x1="7" y1="13" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="o-gen"/></svg>generated · 1 min ahead</label>
+        <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-gen"/><line x1="7" y1="13" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="o-gen"/></svg>prediction · next <span class="hz">15</span> candles</label>
       <label class="chip"><input type="checkbox" id="t-lock" checked>
-        <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-lock"/><line x1="7" y1="13" x2="7" y2="17" class="s-lock"/><rect x="3" y="5" width="8" height="8" class="o-lock"/></svg>fixed record · locked 5 min ahead</label>
+        <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-lock"/><line x1="7" y1="13" x2="7" y2="17" class="s-lock"/><rect x="3" y="5" width="8" height="8" class="o-lock"/></svg>fixed history</label>
       <label class="chip"><input type="checkbox" id="t-band" checked>
         <svg width="20" height="18" aria-hidden="true"><line x1="1" y1="9" x2="19" y2="9" class="s-band"/></svg>90% range</label>
       <label class="chip"><input type="checkbox" id="t-score" checked><span class="ramp" aria-hidden="true"></span>match 1–100</label>
@@ -44,10 +44,10 @@
       <label class="chip"><input type="checkbox" id="t-rev" checked>
         <svg width="14" height="18" aria-hidden="true"><path d="M2 4h10L7 11z" class="f-warn"/></svg>reversal calls</label>
     </div>
-    <p class="muted small hint">Generated and fixed-record candles: hollow = up, filled = down. A candle in the record is written once, before its minute starts, and is never redrawn.</p>
+    <p class="muted small hint">Blue is the prediction: each past candle drawn from the real close before it, then the next <span class="hz">15</span>, redrawn every minute (hollow up, filled down). Pale is the fixed history: that chain as it stood at the start of each quarter hour, never redrawn. Tap a bar at the bottom for that minute's numbers.</p>
     <div class="readout" id="readout" aria-live="off"></div>
     <div class="chartwrap" id="chartwrap">
-      <div id="chart" role="img" aria-label="Candlestick chart: real one-minute candles with the model's generated candles overlaid"></div>
+      <div id="chart" role="img" aria-label="Candlestick chart: real one-minute candles with the model's predicted candles overlaid"></div>
       <div class="countdown" id="countdown" hidden></div>
       <span class="rowlab" id="lab-model" hidden>model</span>
       <span class="rowlab" id="lab-market" hidden>market</span>
@@ -57,18 +57,20 @@
   </section>
   <div class="under">
     <section class="card">
-      <h2>Goal: match the real candle</h2>
-      <p class="muted small">Match 100 = identical candle. Half of it is body overlap (zero when the colour is wrong), half is high–low range overlap.</p>
-      <table class="score" id="score"><thead><tr><th>window</th><th>model</th><th>typical</th><th>repeat</th><th>colour right</th><th>locked</th></tr></thead><tbody></tbody></table>
-      <p class="muted small" id="scorenote"></p>
-      <h3>Generated further ahead, last 24h</h3>
-      <table class="score" id="ahead"><thead><tr><th>ahead</th><th>match</th><th>colour right</th><th>90% range held</th></tr></thead><tbody></tbody></table>
+      <h2>Win rates</h2>
+      <p class="muted small">Every kind of prediction, judged once its outcome is known and archived day by day. Chance is what a coin or a blind caller would score. The rule for every agent: this number has to go up.</p>
+      <div class="tablewrap"><table class="score" id="ledger"><thead><tr><th>prediction</th><th>last day</th><th>7 days</th><th>30 days</th><th>chance</th><th>trend</th></tr></thead><tbody></tbody></table></div>
+      <p class="muted small" id="ledgernote"></p>
     </section>
 
     <section class="card">
-      <h2>Learning</h2>
-      <p class="muted small">After every real candle the result is fed back: agents are re-weighted, ranges re-calibrated, sizes re-tuned against the goal.</p>
-      <dl class="facts plain" id="learning"></dl>
+      <h2>Goal: match the real candle</h2>
+      <p class="muted small">Match 100 = identical candle. Half of it is body overlap (zero when the colour is wrong), half is high–low range overlap.</p>
+      <table class="score" id="score"><thead><tr><th>window</th><th>model</th><th>typical</th><th>repeat</th><th>colour right</th></tr></thead><tbody></tbody></table>
+      <p class="muted small" id="scorenote"></p>
+      <h3>Each candle of the chain, last 24h</h3>
+      <table class="score" id="ahead"><thead><tr><th>candle</th><th>match</th><th>colour right</th><th>90% range held</th><th>fixed history</th></tr></thead><tbody></tbody></table>
+      <p class="muted small" id="aheadnote"></p>
     </section>
   </div>
   </div>
@@ -82,11 +84,33 @@
       </div>
     </section>
 
-    <section class="card">
-      <h2>Reversal agent</h2>
-      <p class="muted small">Its only job: call the minute where price will turn — the highest high or lowest low of the 5 candles on each side — up to 5 minutes before. A call is a hit if the turn comes within one candle of it. Goal: beat chance and beat the naive rule.</p>
-      <table class="score" id="rev"><thead><tr><th>window</th><th>calls</th><th>hit rate</th><th>naive rule</th><th>chance</th></tr></thead><tbody></tbody></table>
+    <section class="card" id="revcard">
+      <h2>Reversal agents</h2>
+      <p class="muted small">They find turning points: the highest high or lowest low among the candles on each side. A call is a hit if the turn forms within one candle of the minute it names.</p>
+      <div class="panel" role="group" aria-label="Reversal control panel">
+        <div class="prow"><span class="plab">turn size</span>
+          <div class="seg" id="rev-k" role="radiogroup" aria-label="Candles on each side"></div></div>
+        <div class="prow"><span class="plab">show</span>
+          <div class="seg" id="rev-type" role="radiogroup" aria-label="Call type">
+            <button type="button" data-v="both" aria-pressed="true">both</button>
+            <button type="button" data-v="now" aria-pressed="false">turn is in</button>
+            <button type="button" data-v="next" aria-pressed="false">turn coming</button></div></div>
+        <div class="prow slider"><label class="plab" for="rev-thr-now">confidence · turn is in</label>
+          <label class="auto"><input type="checkbox" id="rev-auto-now" checked>agent's own</label>
+          <input type="range" id="rev-thr-now" min="30" max="95" step="1" value="60"><output id="rev-out-now">60%</output></div>
+        <div class="prow slider"><label class="plab" for="rev-thr-next">confidence · turn coming</label>
+          <label class="auto"><input type="checkbox" id="rev-auto-next" checked>agent's own</label>
+          <input type="range" id="rev-thr-next" min="30" max="95" step="1" value="45"><output id="rev-out-next">45%</output></div>
+      </div>
+      <p class="muted small" id="revmode"></p>
+      <table class="score" id="rev"><thead><tr><th>calls</th><th>period</th><th>a day</th><th>hit rate</th><th>chance</th></tr></thead><tbody></tbody></table>
       <dl class="facts" id="revfacts"></dl>
+    </section>
+
+    <section class="card">
+      <h2>Learning</h2>
+      <p class="muted small">After every real candle the result is fed back: agents are re-weighted, ranges re-calibrated, sizes re-tuned against the goal.</p>
+      <dl class="facts plain" id="learning"></dl>
     </section>
 
     <section class="card">
@@ -103,7 +127,7 @@
 </main>
 
 <footer class="foot">
-  <p>Research instrument. It holds no funds, places no orders, and nothing here is investment advice. Direction of a one-minute candle is close to a coin flip; size and range are what can actually be forecast.</p>
+  <p>Research instrument. It holds no funds, places no orders, and nothing here is investment advice. From candles alone the colour of a one-minute candle is only slightly better than a coin flip; size, range and turning points are what can actually be forecast.</p>
   <p>Market data: Coinbase Exchange public feed. Charts: <a href="https://www.tradingview.com/" rel="noopener">TradingView</a> Lightweight Charts.</p>
 </footer>
 

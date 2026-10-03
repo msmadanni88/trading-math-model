@@ -26,7 +26,10 @@ from .engine import STATE_VERSION, Engine
 from .features import compute_features, feature_names, regularize
 
 
-PROTECTED = re.compile(r"^(g\d?_|c\d_in$)")       # every column of a generated candle
+# THE RECORD: every column that holds something the models said before the
+# outcome existed - generated candles, the frozen chain, per-candle results of
+# the chain, reversal probabilities. Once written, a value is never rewritten.
+PROTECTED = re.compile(r"^(g\d*_|c\d+_in$|s\d+$|d\d+$|lk_|r\d+_)")
 
 
 def load_engine(path):
@@ -106,7 +109,7 @@ def step(state_dir, cache_dir, offline=False, now=None):
         start_idx = int(idx) + 1
 
         # versions published by runs newer than the restored engine
-        pub = store.read_json(os.path.join(state_dir, "live", "params.json"))
+        pub = store.read_json(os.path.join(state_dir, "versions.json"))
         eng.merge_versions((pub or {}).get("versions", []))
 
     new_rows = run_engine(eng, df, start_idx, progress=replay) if start_idx < len(df) else []
@@ -119,24 +122,36 @@ def step(state_dir, cache_dir, offline=False, now=None):
     eng.fit_student(eff, np.iinfo(np.int64).max)
 
     # reversal calls: appended, never edited (see store.merge_calls)
-    store.merge_calls(state_dir, eng.rev.events)
-    eng.rev.events = []
+    for ag in eng.rev.values():
+        store.merge_calls(state_dir, ag.events)
+        ag.events = []
+
+    # when did this generation of the models start running for real? Everything
+    # stored for earlier minutes is a replay of history, and reports say so.
+    meta_path = os.path.join(state_dir, "meta.json")
+    meta = store.read_json(meta_path) or {}
+    if meta.get("engine") != STATE_VERSION:
+        meta = {"engine": STATE_VERSION, "live_since": int(now)}
+        store.write_json(meta_path, meta, indent=1)
 
     fc_new = pd.DataFrame(new_rows)
     if len(fc_new):
         t0 = int(fc_new["ts"].iloc[0])
         old = store.read_forecasts(state_dir, t0 - 86400)
         if len(old):
-            # THE FIXED RECORD: whatever was generated for a candle and already
+            # THE RECORD: whatever the models said about a candle and is already
             # stored is never rewritten - not when an older engine copy re-learns
-            # that minute, and not when the whole engine is rebuilt.
-            keep = old[(old["ts"] >= t0) & old["g_b"].notna()].set_index("ts")
+            # that minute, and not when the whole engine is rebuilt. A cell that
+            # is still empty (a column that did not exist then) may be filled once.
+            keep = old[old["ts"] >= t0].set_index("ts")
             if len(keep):
-                prot = [c for c in fc_new.columns if PROTECTED.match(c)]
                 fc_new = fc_new.set_index("ts")
                 both = keep.index.intersection(fc_new.index)
-                for c in prot:
-                    fc_new.loc[both, c] = keep.loc[both, c] if c in keep.columns else np.nan
+                for c in [c for c in keep.columns if PROTECTED.match(c)]:
+                    if c not in fc_new.columns:
+                        fc_new[c] = np.nan                      # a retired column stays in the archive
+                    stored = keep.loc[both, c]
+                    fc_new.loc[both, c] = stored.where(stored.notna(), fc_new.loc[both, c])
                 fc_new = fc_new.reset_index()
         fc_tail = pd.concat([old[old["ts"] < t0], fc_new], ignore_index=True) if len(old) else fc_new
         store.write_forecasts(state_dir, fc_tail, t0)
@@ -160,7 +175,7 @@ def step(state_dir, cache_dir, offline=False, now=None):
                   last_candle_ts=int(df["ts"].iloc[-1]), duration_s=round(time.time() - t_start, 1))
     if fetch_err:
         status["error"] = "candle download failed: " + fetch_err
-    rep = report.build(fc, eng, df, status, state_dir)
+    rep = report.build(fc, eng, df, status, state_dir, meta)
     with open(os.path.join(state_dir, "status.json"), "w") as f:
         json.dump(status, f, indent=1)
     print(json.dumps({k: status[k] for k in ("run_at", "n_new_candles", "n_processed", "replay", "duration_s", "error")}))
