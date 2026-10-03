@@ -124,6 +124,19 @@ def generate(W, f, sig):
             "q05": n["q05"], "q25": n["q25"], "q75": n["q75"], "q95": n["q95"]}
 
 
+def call_level(ver, p):
+    """How far the model stands behind a colour call with P(up) = p:
+    0 = close to a coin flip, 1 = confident, 2 = strong. `ct` holds the colour
+    caller's published lines (agents/colour.py), ascending. Compared in
+    millionths, so the site and the cloud cannot disagree over the last digit
+    of a float."""
+    ct = ver.get("ct")
+    if not ct:
+        return 0
+    c = int(abs(p - 0.5) * 1e6 + 0.5)
+    return sum(1 for t in ct if c >= int(t * 1e6 + 0.5))
+
+
 def generate_path(ver, f, sig):
     """The next HORIZON candles, as one connected chain.
 
@@ -145,7 +158,7 @@ def generate_path(ver, f, sig):
     H = ver.get("H")
     if H is None or ver.get("fmt") != FORMAT:
         g = generate(ver["W"], f, sig)
-        g.update(o=0.0, lo=g["q05"], hi=g["q95"], flip=0)
+        g.update(o=0.0, lo=g["q05"], hi=g["q95"], flip=0, call=0)
         return [g]
     iq = 0.5 * (n["q75"] - n["q25"])
     path, o = [], 0.0
@@ -165,7 +178,7 @@ def generate_path(ver, f, sig):
         g = {"p": p, "b": float(b), "u": max(e_up - max(b, 0.0), 0.0), "d": max(e_dn - max(-b, 0.0), 0.0),
              "o": float(o), "lo": cone * n["q05"], "hi": cone * n["q95"], "flip": int(flip), "raw": raw}
         if h == 1:
-            g.update(q05=n["q05"], q25=n["q25"], q75=n["q75"], q95=n["q95"])
+            g.update(q05=n["q05"], q25=n["q25"], q75=n["q75"], q95=n["q95"], call=call_level(ver, p))
         path.append(g)
         o += b
     return path

@@ -44,7 +44,7 @@
       <label class="chip"><input type="checkbox" id="t-rev" checked>
         <svg width="14" height="18" aria-hidden="true"><path d="M2 4h10L7 11z" class="f-warn"/></svg>reversal calls</label>
     </div>
-    <p class="muted small hint">Blue is the prediction: each past candle drawn from the real close before it, then the next <span class="hz">15</span>, redrawn every minute (hollow up, filled down). Pale is the fixed history: that chain as it stood at the start of each quarter hour, never redrawn. Tap a bar at the bottom for that minute's numbers.</p>
+    <p class="muted small hint">Blue is the prediction: each past candle drawn from the real close before it, then the next <span class="hz">15</span>, redrawn every minute (hollow up, filled down). Pale is the fixed history: that chain as it stood at the start of each quarter hour, never redrawn. In the colour rows a bigger dot is a colour call the model stands behind (confident, strong); a small one is close to a coin flip. Tap a bar at the bottom for that minute's numbers.</p>
     <div class="readout" id="readout" aria-live="off"></div>
     <div class="chartwrap" id="chartwrap">
       <div id="chart" role="img" aria-label="Candlestick chart: real one-minute candles with the model's predicted candles overlaid"></div>
@@ -59,8 +59,13 @@
     <section class="card">
       <h2>Win rates</h2>
       <p class="muted small">Every kind of prediction, judged once its outcome is known and archived day by day. Chance is what a coin or a blind caller would score. The rule for every agent: this number has to go up.</p>
-      <div class="tablewrap"><table class="score" id="ledger"><thead><tr><th>prediction</th><th>last day</th><th>7 days</th><th>30 days</th><th>chance</th><th>trend</th></tr></thead><tbody></tbody></table></div>
+      <div class="tablewrap"><table class="score" id="ledger"><thead><tr><th>prediction</th><th>today</th><th>last day</th><th>7 days</th><th>30 days</th><th>chance</th><th>trend</th></tr></thead><tbody></tbody></table></div>
       <p class="muted small" id="ledgernote"></p>
+      <div id="slicebox" hidden>
+        <h3>By market regime, last 30 days</h3>
+        <div class="tablewrap"><table class="score" id="slices"><thead><tr><th>regime</th><th>match</th><th>colour right</th><th>confident calls</th><th>turn is in</th></tr></thead><tbody></tbody></table></div>
+        <p class="muted small">Calm, normal and wild are thirds of the minutes by how volatile the model expected them to be; sessions are UTC hours. A layer that only works in one regime shows here first.</p>
+      </div>
     </section>
 
     <section class="card">

@@ -26,9 +26,12 @@ workflow. Open the site once. Then check, in this order:
    distillation gap should be small); per-candle scores of the chain.
 6. **Calibration.** 7d and 30d coverage of the 90% and 50% ranges within about
    0.02 of nominal; every candle of the chain near 0.90.
-7. **Colour.** Report it honestly (history: about 51% for the next candle,
-   50% further out). Do not tune for it; a sudden jump is a look-ahead bug
-   until proven otherwise.
+7. **Colour.** Report it honestly (history: about 51% for the next candle
+   every minute, 52.6% for the confident calls, 54.9% for the strong ones,
+   50% further out). Check that confidence still pays: confident above every
+   minute, strong above confident, over 30 days, and both near their set
+   number of calls a day. A sudden jump is a look-ahead bug until proven
+   otherwise.
 8. **The record.** Spot-check that rows of older days in `forecasts/`,
    `calls/` and `ledger/winrate.csv` are byte-identical to last week's copy
    (git history of the `state` branch): nothing the models said may change.
@@ -41,7 +44,8 @@ workflow. Open the site once. Then check, in this order:
 Fix what is broken. A change to model logic needs: tests passing
 (`pytest`, `tests/parity.mjs` when anything the browser computes changes,
 `tests/site.mjs` when the page changes), a `STATE_VERSION` bump if saved
-state becomes invalid, and a before/after comparison on the replayed history —
-never judge a change on a few hours. Never edit stored candles, stored
+state becomes invalid, a before/after comparison on the replayed history —
+never judge a change on a few hours — and a line in EXPERIMENTS.md with the
+number that decided it, whether the idea was kept or not. Never edit stored candles, stored
 predictions, stored calls or the ledger. Never raise a win rate by changing
 what counts as a win.

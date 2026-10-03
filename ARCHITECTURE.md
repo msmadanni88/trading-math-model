@@ -60,6 +60,7 @@ for free.
 | orchestrator | `engine.py` | runs the loop, weights the forecast agents (Hedge), calibrates | coverage |
 | goal tuners | `engine.py` | turn forecasts into the candle that scores best, one per candle of the chain | candle score |
 | per-candle heads | `student.py` | colour and size of each of the next 15 candles, learned from realised candles | `colour_next`, `colour_path` |
+| colour caller | `agents/colour.py` | which colour calls the model stands behind: two lines on how far P(up) is from 50% (confident, strong), re-drawn to keep a fixed number of calls a day | `colour_confident`, `colour_strong` |
 | chain builder | `student.py`, `docs/student.js` | connects the 15 candles and keeps the chain inside the model's own range; frozen every quarter hour as the fixed history | `chain_end_side`, fixed-history match |
 | reversal K=3, 5, 8, 13 | `agents/reversal.py` | "the turn is in" and "a turn is coming" for swing points of that size; own tree model, own thresholds, own daily contest | `reversal_k<K>_now`, `_next` |
 | live generator | `docs/student.js`, `docs/app.js` | all of the above in the browser, in real time | parity with the cloud |
@@ -78,7 +79,9 @@ for free.
    Hedge on their out-of-sample loss; a weak one fades without anyone
    deciding it.
 4. **One scoreboard.** Every layer has a line in the win-rate ledger with its
-   chance level and its trend. An agent or a link between agents earns its
+   chance level, its interval and its trend, and the report cuts the main
+   numbers by market regime (volatility thirds, time of day). Every idea that
+   was tested - kept or thrown away - is written down in EXPERIMENTS.md. An agent or a link between agents earns its
    place only if a ledger layer goes up. (Example of a link that was tested
    and rejected: feeding the reversal agents' probabilities to the colour
    heads did not improve colour, so it is not in the model.)
@@ -90,8 +93,9 @@ for free.
 
 | planned agent | kind | where it plugs in | layer it must lift |
 |---|---|---|---|
-| volume / order flow | signal + forecast | signed trade volume; needs the trade stream stored going forward | `colour_next`, `colour_path` |
-| BTC / ETH cross-asset | signal | `registry.signal_agents()`: BTC lead-lag on the blackboard | `colour_next` |
+| cross-market | signal | BTC lead-lag and the price gap to other venues at the minute close, on the blackboard (EXPERIMENTS.md, E14: next to be tested) | `colour_next`, `colour_confident` |
+| trade flow | signal | tested on 15 million trades (E13): no lift for colour or turning points, a small one for the high-low range; kept out until a retest on a longer history passes the gate | range overlap |
+| meta-learner | supervisor | learns from every agent's stored outputs which agent to trust in which regime | `colour_confident`, `overall` |
 | trend | signal + forecast | multi-timeframe trend state on the blackboard | `chain_end_side` |
 | volume profile (visible range) | signal | distance to POC / value-area edges | `reversal_*` |
 | ML monitor | supervisor | per-agent drift → reset or retrain an agent | all |
@@ -121,10 +125,14 @@ Contracts:
 `forecasts/` holds, for every minute: the candle generated one minute ahead
 (`g_*`), its candle in the frozen chain (`lk_*`), how each candle of the chain
 generated for it did (`s<h>`, `d<h>`, `c<h>_in`), and what each reversal
-model said (`r<K>_*`). `calls/` holds every reversal call. `run.py` never
+model said (`r<K>_*`), and whether the colour call was a confident one
+(`g_call`). `calls/` holds every reversal call. `run.py` never
 rewrites a stored value of these (`PROTECTED` columns; an empty cell may be
 filled once) and `store.merge_calls` never edits a stored call. Columns of
-retired designs stay in the files (`g2_*`..`g5_*`, `reversals/`). The browser
+retired designs stay in the files (`g2_*`..`g5_*`, `reversals/`). A decision
+about a prediction (`g_call`) is only ever stored with the prediction it was
+made about: a rebuild does not attach it to an older stored prediction that
+the rebuilt engine would have made differently. The browser
 applies the same rule to what it has already shown (kept in local storage),
 so a visitor never sees a past prediction move.
 

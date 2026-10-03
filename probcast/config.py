@@ -34,3 +34,8 @@ REV_TRAIN = 28800              # origins (20 days) the tree model of a reversal 
 REV_MIN_PER_DAY = 48           # an agent must keep making at least this many calls a day, per call type
 REV_TUNE_EVERY = 360           # it re-picks its confidence thresholds every 6 hours ...
 REV_TUNE_WIN = 10080           # ... from its own last 7 days
+
+# colour caller (see agents/colour.py)
+COL_PER_DAY = (144, 36)        # colour calls a day: "confident" (one minute in ten) and "strong" (one in forty)
+COL_TUNE_WIN = 10080           # the lines are re-drawn from its last 7 days of judged candles
+CLEAR_K = 0.5                  # a "clear" candle moved more than this many typical moves (ledger layer colour_clear)

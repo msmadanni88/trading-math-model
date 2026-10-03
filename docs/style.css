@@ -180,3 +180,11 @@ h3 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 12px 0 0; 
 #ledger td, #ledger th { padding-left: 12px; }
 #ledger td:first-child, #ledger th:first-child { padding-left: 0; white-space: normal; }
 .ahead li span { white-space: nowrap; }
+
+/* win rates: interval under the number, selections of a layer, confident-call badge */
+.score td .ci { display: block; font-size: 10.5px; font-weight: 400; color: var(--text-3); line-height: 1.15; }
+#ledger tr.sub td:first-child { padding-left: 10px; color: var(--text-3); }
+#slices tr.kind td { border-top: 1px solid #45453f; }
+.callbadge { margin-left: auto; font: 500 11px var(--sans); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-3); white-space: nowrap; }
+.callbadge.yes { color: var(--text); border-color: var(--gen); background: color-mix(in srgb, var(--gen) 18%, transparent); }
+.callbadge.strong { color: #fff; border-color: var(--gen); background: color-mix(in srgb, var(--gen) 55%, transparent); font-weight: 600; }

@@ -39,6 +39,8 @@ for (const c of fx.cases) {
     pr.forEach((row, si) => row.forEach((p, a) => check(close(p, want.probs[si][a], 1e-12), `rev prob K=${K} side ${si} type ${a}: ${p} vs ${want.probs[si][a]}`)));
   }
 }
+for (const [p, ct, want] of fx.conf) check(S.callLevel({ ct }, p) === want, `callLevel(${p}, ${ct})`);
+check(S.callLevel({}, 0.9) === 0 && S.callLevel({ ct: null }, 0.9) === 0, "no lines published: no colour call is claimed");
 const s = S.candleScore({ b: 0.0011, u: 0.0004, d: 0.0002 }, 0.0001, -0.0007, 0.0009, -0.0012);
 check(close(s.body, fx.score[0]) && close(s.range, fx.score[1]) && close(s.score, fx.score[2]), "candle score");
 for (const [i, K, top, bot] of fx.swings) {

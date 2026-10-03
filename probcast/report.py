@@ -9,12 +9,15 @@ import pandas as pd
 
 from . import goal, store, student
 from .agents.reversal import TYPES, spaced
-from .config import GRAN, HORIZON, PRODUCT, REV_HS, REV_K, REV_KS, REV_MIN_PER_DAY
+from .config import CLEAR_K, COL_PER_DAY, GRAN, HORIZON, PRODUCT, REV_HS, REV_K, REV_KS, REV_MIN_PER_DAY
 from .core import QUANTILES
 
 TAUS = [f"{int(round(t * 100)):02d}" for t in QUANTILES]
 WINDOWS = {"1h": 60, "6h": 360, "24h": 1440, "7d": 10080, "30d": 43200}
 CURVE = [round(0.30 + 0.05 * i, 2) for i in range(13)]          # confidence thresholds shown in the control panel
+# layers that are a selection of another layer's predictions: shown on their own, not pooled twice
+SUBSETS = ("colour_confident", "colour_strong", "colour_clear")
+SESSIONS = (("Asia 00-08", 0, 8), ("Europe 08-13", 8, 13), ("US 13-21", 13, 21), ("late 21-24", 21, 24))   # UTC hours
 
 
 def _iso(ts):
@@ -153,6 +156,18 @@ def ledger_days(fc, calls, candles, live_since):
         win = ((x["g_b"] > 0) == (x["y"] > 0)).astype(int).groupby(day.loc[x.index]).agg(["count", "sum"])
         for dname, r in win.iterrows():
             rows.append([dname, "colour_next", int(r["count"]), int(r["sum"]), 0.5])
+        # the calls the model stood behind (decided before the candle existed), and the
+        # candles that really moved (more than CLEAR_K typical moves): both are selections
+        # of colour_next, so they are not pooled into `overall` a second time
+        sel = {"colour_clear": x[x["y"].abs() > CLEAR_K * x["sigma"]]}
+        if "g_call" in x:
+            sel["colour_confident"] = x[x["g_call"] >= 1]
+            sel["colour_strong"] = x[x["g_call"] >= 2]
+        for layer, xs in sel.items():
+            if len(xs):
+                win = ((xs["g_b"] > 0) == (xs["y"] > 0)).astype(int).groupby(day.loc[xs.index]).agg(["count", "sum"])
+                for dname, r in win.iterrows():
+                    rows.append([dname, layer, int(r["count"]), int(r["sum"]), 0.5])
         dc = [c for c in fc.columns if c[0] == "d" and c[1:].isdigit()]
         if dc:
             cnt = fc[dc].notna().sum(axis=1).groupby(day).sum()
@@ -187,41 +202,102 @@ def ledger_days(fc, calls, candles, live_since):
     return out
 
 
+def _boot(n, w, seed, B=2000):
+    """Day-block bootstrap of a pooled win rate: whole days are resampled, so
+    predictions of one day (which succeed and fail together) are not counted as
+    independent. n, w: judged and won per day. Returns B resampled rates."""
+    n, w = np.asarray(n, float), np.asarray(w, float)
+    if len(n) < 3 or n.sum() < 30:
+        return None
+    idx = np.random.RandomState(seed).randint(0, len(n), (B, len(n)))
+    return w[idx].sum(1) / np.maximum(n[idx].sum(1), 1.0)
+
+
 def ledger_summary(led, today):
     """Per layer: win rate over the last complete day, 7 and 30 days and since
-    the archive began, the trend (last 7 days against the 7 before), and the
-    same for everything pooled."""
+    the archive began - with a 90% interval from a day-block bootstrap - the
+    trend (last 7 days against the 7 before), the day in progress, and the same
+    for everything pooled."""
     if not len(led):
         return {}
     done = led[led["day"] < today]                    # complete days only
     days = sorted(set(done["day"]))
-    if not days:
-        return {}
     out = {}
 
-    def agg(x):
+    def agg(x, ci=False):
         n = int(x["n"].sum())
-        return None if n == 0 else {"n": n, "rate": round(float(x["wins"].sum() / n), 4)}
+        if n == 0:
+            return None
+        res = {"n": n, "rate": round(float(x["wins"].sum() / n), 4)}
+        if ci:
+            g = x.groupby("day")[["n", "wins"]].sum()
+            b = _boot(g["n"], g["wins"], 7)
+            if b is not None:
+                res["ci"] = [round(float(np.percentile(b, 5)), 4), round(float(np.percentile(b, 95)), 4)]
+        return res
 
-    def block(x):
-        if not len(x):
+    def block(x, part):
+        if not len(x) and not len(part):
             return None
         b = x.dropna(subset=["base"])
-        res = {"1d": agg(x[x["day"] == days[-1]]), "7d": agg(x[x["day"].isin(days[-7:])]),
-               "30d": agg(x[x["day"].isin(days[-30:])]), "all": agg(x), "since": min(x["day"]),
-               "live": agg(x[x["live"] == 1]),
+        res = {"1d": agg(x[x["day"] == days[-1]]) if days else None, "7d": agg(x[x["day"].isin(days[-7:])], True),
+               "30d": agg(x[x["day"].isin(days[-30:])], True), "all": agg(x, True), "since": min(x["day"]) if len(x) else today,
+               "live": agg(x[x["live"] == 1], True), "today": agg(part),
                "base": round(float((b["base"] * b["n"]).sum() / b["n"].sum()), 4) if len(b) and b["n"].sum() else None}
-        prev = agg(x[x["day"].isin(days[-14:-7])])
-        if res["7d"] and prev and prev["n"] >= 30 and res["7d"]["n"] >= 30:
-            p, q = res["7d"]["rate"], prev["rate"]
-            se = float(np.sqrt(p * (1 - p) / res["7d"]["n"] + q * (1 - q) / prev["n"]))
+        last, prev = x[x["day"].isin(days[-7:])], x[x["day"].isin(days[-14:-7])]
+        a7, p7 = agg(last), agg(prev)
+        if a7 and p7 and p7["n"] >= 30 and a7["n"] >= 30:
+            p, q = a7["rate"], p7["rate"]
+            se = float(np.sqrt(p * (1 - p) / a7["n"] + q * (1 - q) / p7["n"]))
+            g1, g0 = last.groupby("day")[["n", "wins"]].sum(), prev.groupby("day")[["n", "wins"]].sum()
+            b1, b0 = _boot(g1["n"], g1["wins"], 11), _boot(g0["n"], g0["wins"], 13)
+            if b1 is not None and b0 is not None:         # days are not independent coin flips: take the wider noise
+                se = max(se, float(np.std(b1 - b0)))
             res["trend"] = {"change": round(p - q, 4), "noise": round(se, 4),
                             "verdict": "up" if p - q > 2 * se else "down" if q - p > 2 * se else "flat"}
         return res
 
-    for layer in sorted(set(done["layer"])):
-        out[layer] = block(done[done["layer"] == layer])
-    out["overall"] = block(done.assign(base=np.nan))
+    now = led[led["day"] == today]
+    for layer in sorted(set(led["layer"])):
+        out[layer] = block(done[done["layer"] == layer], now[now["layer"] == layer])
+    pool = lambda x: x[~x["layer"].isin(SUBSETS)].assign(base=np.nan)
+    out["overall"] = block(pool(done), pool(now))
+    return {k: v for k, v in out.items() if v}
+
+
+# ---------------------------------------------------------------- regime slices
+def slices(fc, calls):
+    """The same numbers cut by market regime, over the stored record given:
+    how volatile the minute was expected to be (terciles of the model's own
+    volatility scale) and the time of day. A layer that only works in one
+    regime shows here before it shows in the pooled win rate."""
+    x = fc[fc["g_b"].notna() & fc["sigma"].notna()]
+    if len(x) < 3000:
+        return None
+    q1, q2 = np.quantile(x["sigma"], [1 / 3, 2 / 3])
+    hour = (x["ts"] // 3600) % 24
+    groups = {"volatility": {"calm": x["sigma"] <= q1, "normal": (x["sigma"] > q1) & (x["sigma"] <= q2), "wild": x["sigma"] > q2},
+              "session": {name: (hour >= a) & (hour < b) for name, a, b in SESSIONS}}
+    sc = pd.Series(goal.candle_score(x["g_b"], x["g_u"], x["g_d"], x["ao"], x["y"], x["ah"], x["al"])[2], index=x.index)
+    win = (x["g_b"] > 0) == (x["y"] > 0)
+    moved = x["y"] != 0
+    conf = (x["g_call"] >= 1) if "g_call" in x else pd.Series(False, index=x.index)
+    hit = None
+    if len(calls):
+        c = calls[calls["hit"].notna() & (calls["typ"] == 0)]
+        hit = c.groupby("for_ts")["hit"].agg(["count", "sum"]).reindex(x["ts"]).fillna(0)
+        hit.index = x.index
+    rate = lambda m: None if m.sum() < 30 else {"n": int(m.sum()), "rate": round(float(win[m].mean()), 4)}
+    out = {}
+    for kind, gs in groups.items():
+        out[kind] = {}
+        for name, m in gs.items():
+            r = {"n": int(m.sum()), "score": _r(sc[m].mean()) if m.sum() else None,
+                 "colour": rate(m & moved), "confident": rate(m & moved & conf)}
+            if hit is not None and hit.loc[m, "count"].sum() >= 30:
+                r["turn_in"] = {"n": int(hit.loc[m, "count"].sum()),
+                                "rate": round(float(hit.loc[m, "sum"].sum() / hit.loc[m, "count"].sum()), 4)}
+            out[kind][name] = r
     return out
 
 
@@ -298,6 +374,8 @@ def build(fc, eng, candles, status, state_dir, meta=None):
     # the win-rate ledger: complete days are written once and kept
     led = store.merge_ledger(state_dir, ledger_days(fc, calls, candles, meta.get("live_since")), store.day(now_ts))
     rep["ledger"] = ledger_summary(led, store.day(now_ts))
+    rep["slices"] = slices(fc, calls) if len(fc) else None
+    rep["colour"] = dict(eng.colour.summary(), per_day=list(COL_PER_DAY), clear_k=CLEAR_K)
 
     P = eng.pending
     if P is not None and P.get("cal") is not None:
@@ -356,6 +434,14 @@ def build(fc, eng, candles, status, state_dir, meta=None):
                 al.append(f"reversal agent K={K}: only {x['per_day']:.0f} '{t}' calls a day in the last 7 days")
         if r.get("stalled"):
             al.append(f"reversal agent K={K}: recent hit rate is below its long-run level - its next daily contest is widened")
+    lc, ln = rep["ledger"].get("colour_confident") or {}, rep["ledger"].get("colour_next") or {}
+    cc = lc.get("7d")
+    if cc and cc["n"] < 0.5 * COL_PER_DAY[0] * 7 and len(led[led["layer"] == "colour_confident"]) >= 8:
+        al.append(f"colour caller: only {cc['n'] / 7:.0f} confident colour calls a day in the last 7 days")
+    c30, n30 = lc.get("30d"), ln.get("30d")
+    if c30 and n30 and c30["n"] >= 2000 and c30["rate"] < n30["rate"]:
+        al.append(f"colour caller: confidence is not paying - confident calls {c30['rate']:.3f} against {n30['rate']:.3f} "
+                  "for every minute over 30 days; the direction head needs new information")
     for layer, b in rep["ledger"].items():
         t = (b or {}).get("trend")
         if t and t["verdict"] == "down":
@@ -390,8 +476,9 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
     if len(fc):
         tail = fc[fc["ts"] >= first]
         g = tail[tail["g_b"].notna()]
-        gen = [[int(t)] + [sig6(x) for x in vals]
-               for t, *vals in zip(g["ts"], g["g_b"], g["g_u"], g["g_d"], g["g_p"], g["g_05"], g["g_25"], g["g_75"], g["g_95"])]
+        call = g["g_call"] if "g_call" in g else pd.Series(np.nan, index=g.index)
+        gen = [[int(t)] + [sig6(x) for x in vals] + [None if cl != cl else int(cl)]
+               for t, cl, *vals in zip(g["ts"], call, g["g_b"], g["g_u"], g["g_d"], g["g_p"], g["g_05"], g["g_25"], g["g_75"], g["g_95"])]
         if "lk_o" in tail:
             k = tail[tail["lk_o"].notna()]
             locked = [[int(t), int(h)] + [sig6(x) for x in vals]
@@ -404,7 +491,7 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
     P = eng.pending
     if P is not None and P.get("gen"):
         gg = P["gen"]
-        gen.append([int(P["for_ts"])] + [sig6(gg[k]) for k in ("b", "u", "d", "p", "q05", "q25", "q75", "q95")])
+        gen.append([int(P["for_ts"])] + [sig6(gg[k]) for k in ("b", "u", "d", "p", "q05", "q25", "q75", "q95")] + [int(gg.get("call", 0))])
     for t in sorted(eng.snap):                              # minutes of the current chain that have not closed yet
         e = eng.snap[t]
         locked.append([int(t), int(e["h"])] + [sig6(e[x]) for x in ("o", "b", "u", "d")])
@@ -429,13 +516,14 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
     gen_ts = int(rep["status"]["run_ts"])
     latest = {"v": 2, "product": PRODUCT, "gran": GRAN, "generated": gen_ts,
               "last_ts": int(candles["ts"].iloc[-1]), "live_since": rep.get("live_since"), "candles": cand,
-              "gen_cols": ["ts", "b", "u", "d", "p", "q05", "q25", "q75", "q95"], "gen": gen,
+              "gen_cols": ["ts", "b", "u", "d", "p", "q05", "q25", "q75", "q95", "call"], "gen": gen,
               "path_cols": ["b", "u", "d", "p", "o", "lo", "hi"], "path": path, "horizon": HORIZON,
               "locked_cols": ["ts", "h", "o", "b", "u", "d"], "locked": locked,
               "rev_cols": {"calls": ["made_ts", "for_ts", "side", "typ", "p", "level", "hit"],
                            "probs": ["ts", "top_now", "top_next", "bottom_now", "bottom_next"]},
               "rev": rev, "rev_min_per_day": REV_MIN_PER_DAY, "curve_thresholds": CURVE,
-              "ledger": rep.get("ledger"), "learning": rep.get("learning"),
+              "ledger": rep.get("ledger"), "slices": rep.get("slices"), "colour": rep.get("colour"),
+              "learning": rep.get("learning"),
               "windows": slim, "next": rep.get("next"), "hmm": rep.get("hmm"), "student": rep.get("student"),
               "alerts": rep["alerts"], "retrain_log": rep["retrain_log"][-3:]}
     live = os.path.join(state_dir, "live")
@@ -444,7 +532,7 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
     # in force; a restored engine (see run.py) may need to look further back.
     out = lambda v: {"eff": v["eff"], "fmt": v.get("fmt"), "W": v["W"].tolist(),
                      "H": None if v.get("H") is None else np.asarray(v["H"]).tolist(),
-                     "scale": v.get("scale"), "cone": v.get("cone"), "rm": v.get("rm"), "rt": v.get("rt")}
+                     "scale": v.get("scale"), "cone": v.get("cone"), "rm": v.get("rm"), "rt": v.get("rt"), "ct": v.get("ct")}
     vers = eng.versions[-4:]
     params = {"v": 2, "fmt": student.FORMAT, "win": student.STUDENT_WIN, "lam": student.LAM, "horizon": HORIZON,
               "features": student.FEATURES, "outputs": student.OUTPUTS, "h_outputs": student.H_OUTPUTS,
@@ -472,14 +560,27 @@ def markdown(rep, agents):
          " (numbers for earlier days are a replay of history, minute by minute, with only the past visible)", ""]
     L += ["## Goal keeper alerts", ""] + ([f"- {a}" for a in rep["alerts"]] or ["- none: on track"]) + [""]
     f3 = lambda x: "-" if x is None else f"{x:.3f}"
-    L += ["## Win-rate ledger (complete UTC days only; archived in ledger/winrate.csv)", "",
-          "| layer | last day | 7 days | 30 days | all | since go-live | chance | trend |", "|---|---|---|---|---|---|---|---|"]
-    cell = lambda a: "-" if not a else f"{a['rate']:.3f} ({a['n']})"
-    trend = lambda t: "-" if not t else f"{t['verdict']} {t['change']:+.3f}"
+    L += ["## Win-rate ledger (complete UTC days; archived in ledger/winrate.csv)", "",
+          "win rate (predictions judged) [90% interval, resampling whole days]. `colour_confident`, `colour_strong` and "
+          "`colour_clear` are selections of `colour_next` and are not counted again in `overall`.", "",
+          "| layer | last day | 7 days | 30 days | all | since go-live | today so far | chance | trend |", "|---|---|---|---|---|---|---|---|---|"]
+    cell = lambda a: "-" if not a else f"{a['rate']:.3f} ({a['n']})" + (f" [{a['ci'][0]:.3f}, {a['ci'][1]:.3f}]" if a.get("ci") else "")
+    trend = lambda t: "-" if not t else f"{t['verdict']} {t['change']:+.3f} (noise {t['noise']:.3f})"
     for layer, b in (rep.get("ledger") or {}).items():
         if b:
             L.append(f"| {layer} | {cell(b['1d'])} | {cell(b['7d'])} | {cell(b['30d'])} | {cell(b['all'])} | {cell(b['live'])} "
-                     f"| {f3(b.get('base'))} | {trend(b.get('trend'))} |")
+                     f"| {cell(b.get('today'))} | {f3(b.get('base'))} | {trend(b.get('trend'))} |")
+    cl = rep.get("colour") or {}
+    L += ["", f"- colour caller: a colour call is confident / strong when |P(up) - 0.5| is at least {cl.get('threshold')} "
+              f"(about {cl.get('per_day')} calls a day); over its last 7 days: {cl.get('tuned')}"]
+    if rep.get("slices"):
+        L += ["", "## By market regime (last 30 days of the record)", "",
+              "| regime | candles | candle score | colour right | confident colour right | 'turn is in' hit rate |", "|---|---|---|---|---|---|"]
+        rc = lambda a: "-" if not a else f"{a['rate']:.3f} ({a['n']})"
+        for kind, gs in rep["slices"].items():
+            for name, r in gs.items():
+                L.append(f"| {kind}: {name} | {r['n']} | {f3(r.get('score'))} | {rc(r.get('colour'))} | {rc(r.get('confident'))} "
+                         f"| {rc(r.get('turn_in'))} |")
     L += ["", "## The goal: generated candle vs real candle", "",
           "score = 0.5 x body overlap + 0.5 x range overlap (1.0 = identical candle). `site` is the live "
           "generator the site draws, `full` is the complete cloud model, `repeat` and `typical` are naive baselines.", "",

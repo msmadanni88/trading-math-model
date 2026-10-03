@@ -9,6 +9,7 @@ orders, and nothing it outputs is investment advice.
 - **Goal:** [GOAL.md](GOAL.md) — the win-rate ledger, what each layer predicts,
   and what is realistically achievable.
 - **Design and agents:** [ARCHITECTURE.md](ARCHITECTURE.md).
+- **Every idea that was tested, kept or rejected:** [EXPERIMENTS.md](EXPERIMENTS.md).
 - **Weekly review checklist:** [REVIEW.md](REVIEW.md).
 
 ## How it runs

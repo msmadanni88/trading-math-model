@@ -17,6 +17,7 @@ import numpy as np
 from . import student
 from .agents.learners import Lgbm
 from .agents.registry import forecast_agents, shape_agents, signal_agents
+from .agents.colour import ColourCaller
 from .agents.reversal import ReversalAgent
 from .config import (GRAN, HORIZON, LGBM_EVERY, RETRAIN_EVERY, REV_KS, REV_TUNE_EVERY, STUDENT_LEAD, STUDENT_ROWS,
                      STUDENT_ROWS_H, STUDENT_STEP, STUDENT_WIN, TRAIN_WINDOW)
@@ -24,7 +25,7 @@ from .core import BOCPD, QUANTILES, pinball
 from .features import feature_names
 from .goal import candle_score
 
-STATE_VERSION = 5            # bump when a change makes old saved state invalid
+STATE_VERSION = 6            # bump when a change makes old saved state invalid
 EXTRA = ["cp_prob", "log_run", "bocpd_lsd"]
 BP = 1e4
 NQ = len(QUANTILES)
@@ -209,6 +210,7 @@ class Engine:
         self.multi = {}                      # target ts -> {h: what was generated h candles ahead}
         self.snap = {}                       # target ts -> its candle in the frozen chain (the fixed record)
         self.rev = {K: ReversalAgent(K) for K in REV_KS}
+        self.colour = ColourCaller()
         self.cum = 0.0                       # cumulative log return (to score the cones)
         self.simulate_publish = True         # replay mode: emulate a cloud run every STUDENT_STEP
 
@@ -273,6 +275,7 @@ class Engine:
             # reversal agents: which published tree model and which thresholds are in force
             "rm": {str(K): int(ag.model_id) for K, ag in self.rev.items()},
             "rt": {str(K): [float(f"{x:.4g}") for x in ag.thr] for K, ag in self.rev.items()},
+            "ct": self.colour.thr,           # colour caller: the confidence a confident / a strong colour call needs
             "n": int(len(X)), "r2": [round(float(x), 3) for x in r2]})
         self.versions = self.versions[-60:]
         return self.versions[-1]
@@ -286,7 +289,7 @@ class Engine:
                 self.versions.append({"eff": int(v["eff"]), "fmt": v["fmt"], "W": np.array(v["W"], float),
                                       "H": None if v.get("H") is None else np.array(v["H"], float),
                                       "scale": v.get("scale"), "cone": v.get("cone"),
-                                      "rm": v.get("rm") or {}, "rt": v.get("rt") or {}, "n": 0, "r2": []})
+                                      "rm": v.get("rm") or {}, "rt": v.get("rt") or {}, "ct": v.get("ct"), "n": 0, "r2": []})
         self.versions = sorted(self.versions, key=lambda v: v["eff"])[-60:]
 
     def version_at(self, ts):
@@ -335,9 +338,12 @@ class Engine:
             row.update({"t_b": tg[0], "t_u": tg[1], "t_d": tg[2]} if tg else {"t_b": np.nan, "t_u": np.nan, "t_d": np.nan})
             if g:
                 row.update({"g_b": g["b"], "g_u": g["u"], "g_d": g["d"], "g_p": g["p"], "g_05": g["q05"],
-                            "g_25": g["q25"], "g_75": g["q75"], "g_95": g["q95"], "g_eff": g["eff"]})
+                            "g_25": g["q25"], "g_75": g["q75"], "g_95": g["q95"], "g_eff": g["eff"],
+                            "g_call": float(g.get("call", 0))})
+                if r != 0:                   # the colour caller learns how its confidence paid off
+                    self.colour.observe(ts, abs(g["p"] - 0.5), (g["b"] > 0) == (r > 0))
             else:
-                row.update({k: np.nan for k in ("g_b", "g_u", "g_d", "g_p", "g_05", "g_25", "g_75", "g_95")})
+                row.update({k: np.nan for k in ("g_b", "g_u", "g_d", "g_p", "g_05", "g_25", "g_75", "g_95", "g_call")})
                 row["g_eff"] = 0
             self.hedge.update(losses)
             self.calib.update(P["cal"], r)
@@ -394,6 +400,7 @@ class Engine:
         if self.n % REV_TUNE_EVERY == 0:
             for ag in self.rev.values():
                 ag.tune()
+            self.colour.tune()
 
         # 4) forecast the next candle
         sigma = None if self.var_fast is None else float(np.sqrt(self.var_fast))

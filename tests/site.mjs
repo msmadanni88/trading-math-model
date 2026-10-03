@@ -6,6 +6,8 @@
 //   - nothing in the record (predicted candles, fixed history, reversal calls) ever changes once written
 //   - the predicted chain is connected, colours match bodies, wicks never point inwards
 //   - the details card opens from a match bar and from nothing else
+//   - a colour call is marked confident exactly when the published threshold says so
+//   - the prediction stays in view when the width of the page changes
 // including after a reload, a gap in the trade stream, a frozen tab and a dropped connection.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -120,6 +122,24 @@ let d = await candlesMatch(page, "A load");
 shape(d, "A load");
 ok(d.calls > 0, "A load: reversal calls are on the chart");
 ok(!d.inspector, "A load: details card is closed");
+// confident colour calls: decided with the published threshold, shown in the cards
+const cc = await page.evaluate(() => {
+  const s = window.__site.state(), G = [...s.G.values()].filter((g) => g.p != null);
+  const conf = (g) => Math.abs(g.p - 0.5), mean = (a) => a.reduce((x, y) => x + y, 0) / Math.max(a.length, 1);
+  const yes = G.filter((g) => g.c >= 1), no = G.filter((g) => !g.c), strong = G.filter((g) => g.c === 2);
+  const rows = [...document.querySelectorAll("#ledger tbody tr")].map((r) => r.innerText);
+  return { yes: yes.length, no: no.length, strong: strong.length, cy: mean(yes.map(conf)), cn: mean(no.map(conf)),
+    head: document.querySelector("#ledger thead").innerText, rows, ci: document.querySelectorAll("#ledger .ci").length,
+    slices: document.querySelectorAll("#slices tbody tr").length, sliceShown: !document.getElementById("slicebox").hidden,
+    badge: (document.querySelector("#next .callbadge") || {}).textContent, note: document.getElementById("chartnote").textContent };
+});
+ok(cc.yes > 10 && cc.no > cc.yes && cc.strong > 0 && cc.strong < cc.yes, `A: ${cc.yes} confident colour calls (${cc.strong} strong) and ${cc.no} others on the chart`);
+ok(cc.cy > 1.5 * cc.cn, `A: confident calls are the ones far from 50% (${cc.cy.toFixed(4)} vs ${cc.cn.toFixed(4)})`);
+ok(/today/.test(cc.head) && cc.rows.some((r) => /confident calls/.test(r)) && cc.rows.some((r) => /strong calls/.test(r)) && cc.rows.some((r) => /really moved/.test(r)), "A: the win-rate table lists the confident calls and the clear candles");
+ok(cc.ci >= 10, `A: win rates carry their interval (${cc.ci})`);
+ok(cc.sliceShown && cc.slices === 7, `A: the regime table has ${cc.slices} rows`);
+ok(/confident call|strong call/.test(cc.badge || ""), `A: the next-candle card says whether the call is confident (${cc.badge})`);
+ok(/confident and strong calls/.test(cc.note), `A: the chart note counts the confident calls (${cc.note.slice(0, 160)})`);
 if (shots) await page.screenshot({ path: shots + "/site-desktop.png", fullPage: true });
 
 // ---- B. the details card opens from a match bar only
@@ -214,6 +234,18 @@ await page.locator("#rev-k button", { hasText: /^5$/ }).click(); await sleep(500
 for (const id of ["t-real", "t-gen", "t-lock", "t-band", "t-score", "t-dots", "t-rev"]) { await page.locator("#" + id).uncheck(); await page.locator("#" + id).check(); }
 recordKept(d, await dump(page), "H after using the panel");
 if (shots) await page.screenshot({ path: shots + "/site-desktop-end.png", fullPage: true });
+
+// ---- J. the width changes (window resized, phone rotated): the prediction stays in view
+const inView = () => page.evaluate(() => {
+  const s = window.__site.state(), last = s.chain[s.chain.length - 1];
+  return { x: window.__site.xOf(last.ts), x0: window.__site.xOf(s.chain[0].ts), w: document.getElementById("chart").clientWidth };
+});
+for (const w of [900, 420, 1280, 600]) {
+  await page.setViewportSize({ width: w, height: 900 }); await sleep(900);
+  const v = await inView();
+  ok(v.x != null && v.x0 != null && v.x0 > 0 && v.x < v.w - 30, `J: at width ${w} the predicted chain is in view (x ${Math.round(v.x0)}..${Math.round(v.x)} of ${v.w})`);
+}
+recordKept(d, await dump(page), "J after resizing");
 await ctx.close();
 
 // ---- I. phone: tap a bar, tap a candle

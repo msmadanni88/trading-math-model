@@ -12,22 +12,32 @@ has to go up.
 `ledger/winrate.csv` on the `state` branch: one line per UTC day and layer —
 how many predictions were judged and how many were right, next to what chance
 would score. A day is written for good once it is two days old. The site and
-`reports/latest.md` show, per layer and for everything pooled: last day,
-7 days, 30 days, and the trend (last 7 days against the 7 before, with its
-noise level).
+`reports/latest.md` show, per layer and for everything pooled: the day in
+progress, last day, 7 days, 30 days, and the trend (last 7 days against the
+7 before).
+
+Every win rate comes with a 90% interval from a day-block bootstrap: whole
+days are resampled, because the predictions of one day succeed and fail
+together and are not independent coin flips. The trend is called `up` or
+`down` only when the change is larger than twice the wider of the two noise
+estimates (binomial, and day-to-day); otherwise it is `flat`.
 
 | layer | one prediction | a win |
 |---|---|---|
 | `colour_next` | the colour of the next candle | same colour as the real candle |
+| `colour_confident` | the colour calls the model stands behind: P(up) far enough from 50% to be among its roughly 144 most confident minutes of a day (decided and stored before the candle exists) | same colour |
+| `colour_strong` | the strongest of those: roughly the 36 most confident minutes of a day | same colour |
+| `colour_clear` | the colour of the next candle, counted only when the real candle moved more than half a typical move | same colour |
 | `colour_path` | the colour of each of candles 2–15 of the chain | same colour |
 | `chain_end_side` | the frozen chain's last close, above or below its start | the market ended on that side 15 minutes later |
 | `reversal_k<K>_now` | "the turn is in": a swing point of size K at the candle that just closed, give or take one | it is confirmed K candles later |
 | `reversal_k<K>_next` | "a turn is coming": a swing point of size K in one of the next three candles | it forms there |
-| `overall` | every prediction above, pooled | — |
+| `overall` | every prediction above, pooled (`colour_confident`, `colour_strong` and `colour_clear` are selections of `colour_next` and are not counted a second time) | — |
 
 Definitions are fixed. A win rate may not be raised by loosening what counts
 as a win or by going quiet: the reversal agents must keep making
-`REV_MIN_PER_DAY` calls a day of each kind, and the candle layers predict every
+`REV_MIN_PER_DAY` calls a day of each kind, the colour caller's lines are set by a fixed
+number of calls a day (`COL_PER_DAY`), not by what scored well, and the candle layers predict every
 minute. The only legitimate routes up are being pickier among at least that
 many calls, learning better, and new information.
 
@@ -44,14 +54,20 @@ those days, so the numbers that count are the ones `since go-live`.
 - candles 2–15 of the chain, each judged from its own open: 35.5 falling to
   34.6; their 90% ranges hold 90% of the time
 
-**Colour, from candles alone, is barely forecastable.**
-- next candle: 51.1% with the per-candle direction head (the earlier
-  generation, which read the direction off the range forecast, had 50.0%)
+**Colour, from candles alone, is barely forecastable - but the model knows
+when it has something to say.**
+- next candle, every minute: 51.0% with the per-candle direction head (the
+  earlier generation, which read the direction off the range forecast, had
+  50.0%)
+- its confident calls (about 144 a day): 52.6%; its strong calls (about 36 a
+  day): 54.9% - walking forward, and in both halves of the period
+- candles that really moved (more than half a typical move): 51.5%
 - candles 2–15: 50.1%
-- the 10% most confident colour calls reach about 52.5%. Tree models did no
-  better than the linear head. This is the ceiling without new information:
-  order flow (who is hitting the bid and the offer) is the most promising
-  source and is the job of the planned volume agents.
+- tree models did no better than the linear head, and trade flow (15 million
+  trades, who hit the bid and the offer) added nothing to the colour of the
+  next candle: what a minute's trades say about direction is already in its
+  candle (EXPERIMENTS.md, E13). The remaining route up is information that is
+  not in this market's own tape: other markets and venues that move first.
 
 **Turning points are forecastable.** Hit rate of the calls, at about 50 calls
 a day each; chance is how often the event happens anyway:
@@ -139,6 +155,7 @@ with what the market did, even after the market has gone somewhere else.
 | per-candle heads | colour and size of candles 1–15, refitted on what the market really printed | every cloud run |
 | distillation | the live generator in the browser is refitted to the full model | every cloud run |
 | swing labels | every confirmed swing point is a new training row for the reversal agents | every candle |
+| colour caller | re-draws the two lines (confident, strong): the confidence that gave 144 and 36 calls a day over its last 7 days; measures whether confidence still pays | every 6 hours |
 | threshold tuning | each reversal agent re-picks the confidence that gave its best hit rate (beyond luck) over its last 7 days, among those keeping the minimum number of calls | every 6 hours |
 | refits | GARCH, HMM | every 12 hours |
 | champion / challenger | a new tree model replaces the old one only if it wins on two unseen days | daily |

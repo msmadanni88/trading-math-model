@@ -161,7 +161,7 @@ def _version(rng, fmt=student.FORMAT):
     W[4:, 0] = [-1.6, -0.67, 0.67, 1.6]                # ordered quantiles, like a fitted model has
     H = rng.normal(size=(HORIZON, len(student.H_OUTPUTS), len(student.FEATURES))) * 0.1
     ver = {"fmt": fmt, "W": W, "H": H, "scale": [[1.0, 1.0]] + [[1.0 + 0.02 * h, 1.2 + 0.03 * h] for h in range(1, HORIZON)],
-           "cone": [1.0] + [float(np.sqrt(h)) for h in range(2, HORIZON + 1)]}
+           "cone": [1.0] + [float(np.sqrt(h)) for h in range(2, HORIZON + 1)], "ct": [0.04, 0.09]}
     return W, H, ver
 
 
@@ -187,7 +187,7 @@ def test_chain_of_generated_candles_is_connected_and_stays_in_its_own_range():
     rng = np.random.default_rng(5)
     df = regularize(synth(900, seed=5))
     C = df[["open", "high", "low", "close", "volume"]].to_numpy()
-    flips = 0
+    flips, calls = 0, []
     for trial in range(60):
         W, H, ver = _version(rng)
         end = 300 + trial * 9
@@ -208,6 +208,11 @@ def test_chain_of_generated_candles_is_connected_and_stays_in_its_own_range():
             flips += g["flip"]
             o += g["b"]
         assert path[0]["flip"] == 0 and path[0]["o"] == 0.0
+        # the confident-call flag belongs to candle 1 only and follows the published threshold
+        assert path[0]["call"] == sum(abs(path[0]["p"] - 0.5) >= t for t in ver["ct"]) and all("call" not in g for g in path[1:])
+        calls.append(path[0]["call"])
+        assert student.generate_path(dict(ver, ct=None), f, sig)[0]["call"] == 0     # no lines published yet: no calls
+    assert set(calls) == {0, 1, 2}                       # every level occurred
     assert flips > 20                                    # the rule was actually exercised
     # an old-format version still gives the next candle, and only that
     W, H, ver = _version(rng, fmt=None)
@@ -336,7 +341,7 @@ def test_write_js_parity_fixture(tmp_path):
     swings = [[int(i), int(K), bool(hi[i] >= hi[i - K:i + K + 1].max()), bool(lo[i] <= lo[i - K:i + K + 1].min())]
               for i in (100, 257, 333, 480, 612) for K in REV_KS]
     cases = []
-    keys = ("p", "b", "u", "d", "o", "lo", "hi", "flip")
+    keys = ("p", "b", "u", "d", "o", "lo", "hi", "flip", "call")
     for end in (300, 455, 640, len(df) - 1):
         nts = int(df["ts"].iloc[end]) + GRAN
         Cw = C[end - STUDENT_WIN:end + 1]
@@ -348,10 +353,13 @@ def test_write_js_parity_fixture(tmp_path):
             rev[str(K)] = {"phi": [x.tolist() for x in phis], "probs": pr.tolist()}
         cases.append({"last_ts": int(df["ts"].iloc[end]), "f": f.tolist(), "sig": sig,
                       "gen": student.generate(W, f, sig),
-                      "path": [{k: g[k] for k in keys} for g in student.generate_path(ver, f, sig)], "rev": rev})
+                      "path": [{k: g[k] for k in keys if k in g} for g in student.generate_path(ver, f, sig)], "rev": rev})
     sc = goal.candle_score(0.0011, 0.0004, 0.0002, 0.0001, -0.0007, 0.0009, -0.0012)
     out = {"raw": raw, "n_regular": len(df), "W": W.tolist(), "cases": cases, "horizon": HORIZON,
-           "ver": {"fmt": ver["fmt"], "W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"]},
+           "ver": {"fmt": ver["fmt"], "W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"], "ct": ver["ct"]},
+           "conf": [[float(p), [float(ct), float(2 * ct)], int(student.call_level({"ct": [ct, 2 * ct]}, p))]
+                    for ct in (0.02, 0.0317, 0.05)
+                    for p in np.r_[np.linspace(0.38, 0.62, 97), 0.5 + ct, 0.5 - ct, 0.5 + ct - 4e-7, 0.5 - ct + 6e-7, 0.5 + 2 * ct, 0.5 - 2 * ct + 6e-7]],
            "model": {k: v for k, v in model.items() if k != "_np"}, "hs": list(REV_HS), "swings": swings,
            "score": [float(x) for x in sc]}
     path = os.environ.get("PARITY_FIXTURE", str(tmp_path / "parity.json"))
@@ -390,7 +398,7 @@ def test_restoring_an_older_engine_gives_the_same_record(monkeypatch):
         v = eng.fit_student(-(-(now + 420) // 300) * 300, np.iinfo(np.int64).max)
         if v:                                          # exactly what report.publish writes to versions.json
             published.append(json.loads(json.dumps({"eff": v["eff"], "fmt": v["fmt"], "W": v["W"].tolist(), "H": v["H"].tolist(),
-                                                    "scale": v["scale"], "cone": v["cone"], "rm": v["rm"], "rt": v["rt"]})))
+                                                    "scale": v["scale"], "cone": v["cone"], "rm": v["rm"], "rt": v["rt"], "ct": v["ct"]})))
     assert len(published) > 10
     snap.merge_versions(published[-14:])                # what versions.json on the state branch holds
     again = run_engine(snap, df, 3265)
@@ -468,9 +476,9 @@ def test_stored_calls_are_never_rewritten_and_record_columns_are_protected(tmp_p
     assert len(got) == 3 and got[0]["p"] == 0.4 and got[0]["level"] == 2000.0 and got[0]["hit"] == 1
     assert (got[1]["typ"], got[1]["p"]) == (1, 0.5) and got[2]["k"] == 8 and got[2]["hit"] != got[2]["hit"]
     from probcast.run import PROTECTED
-    cols = ["g_b", "g_u", "g_p", "g_95", "g_eff", "g2_b", "g5_o", "c3_in", "c15_in", "s2", "s15", "d7", "lk_o", "lk_h", "r5_tn", "r13_bx",
+    cols = ["g_b", "g_u", "g_p", "g_95", "g_eff", "g_call", "g2_b", "g5_o", "c3_in", "c15_in", "s2", "s15", "d7", "lk_o", "lk_h", "r5_tn", "r13_bx",
             "t_b", "y", "cal_50", "cp_prob", "loss_garch", "sigma", "p_up", "ts"]
-    assert [c for c in cols if PROTECTED.match(c)] == cols[:16]
+    assert [c for c in cols if PROTECTED.match(c)] == cols[:17]
 
 
 def test_ledger_keeps_days_that_are_two_days_old(tmp_path):
@@ -512,11 +520,30 @@ def test_full_run_writes_everything_and_a_rebuild_changes_nothing_already_stored
         assert used and used <= set(live(f"rev_k{K}.json")["models"]) and used <= set(head["models"][str(K)])     # every model in use is published
         assert len(latest["rev"][str(K)]["probs"]) > 300
     assert rep["ledger"] and "colour_next" in rep["ledger"] and "overall" in rep["ledger"]
+    # the colour caller has picked its line; the decision is stored with every generated candle and published
+    assert len(rep["colour"]["threshold"]) == 2 and params["versions"][-1]["ct"] == rep["colour"]["threshold"]
+    assert latest["gen_cols"][-1] == "call" and all(len(g) == 10 for g in latest["gen"])
+    assert {"colour_confident", "colour_strong", "colour_clear"} <= set(rep["ledger"])
+    cn, ov = rep["ledger"]["colour_next"], rep["ledger"]["overall"]
+    assert cn["all"]["ci"][0] <= cn["all"]["rate"] <= cn["all"]["ci"][1]
+    pooled = sum(b["all"]["n"] for l, b in rep["ledger"].items() if l not in ("overall", "colour_confident", "colour_strong", "colour_clear") and b["all"])
+    assert ov["all"]["n"] == pooled                           # selections of a layer are not pooled twice
+    assert set(rep["slices"]) == {"volatility", "session"} and sum(r["n"] for r in rep["slices"]["volatility"].values()) > 3000
     meta = json.load(open(os.path.join(sd, "meta.json")))
     assert meta["live_since"] == int(now1)
     fc1 = store.read_forecasts(sd)
+    called = fc1["g_call"].dropna()
+    assert set(called.unique()) == {0.0, 1.0, 2.0} and (called == 0).mean() > 0.6 and (called == 1).sum() > (called == 2).sum()
     calls1 = store.read_calls(sd)
     assert len(calls1) > 20
+    # two kinds of older rows in the archive, both without the confident-call decision:
+    # A - the stored prediction is the one a rebuild makes again; B - it is a different one
+    ix = fc1.index[fc1["g_call"].notna()]
+    A, B = ix[-400:-200], ix[-200:]
+    fc1.loc[A.union(B), "g_call"] = np.nan
+    fc1.loc[B, "g_p"] = (fc1.loc[B, "g_p"] + 0.011).round(6)
+    store.write_forecasts(sd, fc1, int(fc1["ts"].iloc[0]))
+    fc1 = store.read_forecasts(sd)
     # second run: new candles arrive and the saved engine is lost -> full rebuild
     store.write_candles(sd, rows)
     os.remove(os.path.join(cd, "engine.pkl.gz"))
@@ -530,9 +557,71 @@ def test_full_run_writes_everything_and_a_rebuild_changes_nothing_already_stored
     x, y = a[prot].to_numpy(float), b[prot].to_numpy(float)
     was = ~np.isnan(x)
     assert np.array_equal(x[was], y[was])                      # nothing that was written has changed
+    # the decision is filled in for the predictions it belongs to, and never attached to a different one
+    assert b["g_call"].loc[fc1.loc[A, "ts"]].notna().all() and b["g_call"].loc[fc1.loc[B, "ts"]].isna().all()
     calls2 = store.read_calls(sd).set_index(["for_ts", "k", "side", "typ"])
     for r in calls1.itertuples():
         q = calls2.loc[(r.for_ts, r.k, r.side, r.typ)]
         assert q["p"] == r.p and q["made_ts"] == r.made_ts
         assert r.hit != r.hit or q["hit"] == r.hit
     assert json.load(open(os.path.join(sd, "meta.json")))["live_since"] == int(now1)      # go-live date is kept
+
+
+def test_colour_caller_draws_its_lines_by_call_rate():
+    """The lines are the confidences that give the set number of calls a day;
+    a strong call is always also a confident one; where confidence carries an
+    edge the calls beat calling every minute, and the report says by how much."""
+    from probcast.agents.colour import ColourCaller
+    from probcast.config import COL_PER_DAY
+    rng = np.random.default_rng(4)
+    n = 6 * 1440
+    conf = np.abs(rng.normal(0, 0.03, n))
+    for edge in (True, False):
+        cc = ColourCaller()
+        assert cc.tune() is None and cc.thr is None            # nothing to learn from yet
+        win = rng.random(n) < (0.5 + (1.5 * conf if edge else 0.0))
+        for i in range(n):
+            cc.observe(T0 + i * GRAN, conf[i], win[i])
+        info = cc.tune()
+        assert 0 < cc.thr[0] < cc.thr[1] < 0.2
+        for lv, per_day in zip(info["levels"], COL_PER_DAY):
+            assert abs(lv["calls_per_day"] - per_day) < 2
+            assert abs((conf >= lv["threshold"]).sum() / 6 - lv["calls_per_day"]) < 2
+        if edge:
+            assert info["levels"][1]["win_rate"] > info["levels"][0]["win_rate"] > info["every_minute"] + 0.02
+        first = list(cc.thr)
+        cc.tune()
+        assert np.allclose(cc.thr, first, atol=1e-3)            # stable when nothing changed
+    ver = {"ct": [0.05, 0.08]}
+    assert [student.call_level(ver, p) for p in (0.5, 0.5499, 0.55, 0.45, 0.579, 0.58, 0.42, 0.98)] == [0, 0, 1, 1, 1, 2, 2, 2]
+    assert student.call_level({}, 0.9) == 0 and student.call_level({"ct": None}, 0.9) == 0
+
+
+def test_ledger_intervals_trend_and_today():
+    """The interval comes from resampling whole days; a layer that is only a
+    selection of another one is listed but not pooled twice; the trend is
+    `flat` unless the change is beyond the day-to-day noise."""
+    from probcast import report
+    rng = np.random.default_rng(8)
+    days = [f"2026-09-{d:02d}" for d in range(1, 29)]
+    rows = []
+    for i, d in enumerate(days):
+        p = 0.52 + 0.03 * np.sin(i)                             # days differ more than coin flips would
+        rows.append([d, "colour_next", 1400, int(rng.binomial(1400, p)), 0.5, int(i >= 20)])
+        rows.append([d, "colour_confident", 150, int(rng.binomial(150, 0.56)), 0.5, int(i >= 20)])
+        rows.append([d, "reversal_k5_now", 50, int(rng.binomial(50, 0.60 if i < 21 else 0.90)), 0.2, int(i >= 20)])
+    rows.append(["2026-09-29", "colour_next", 300, 160, 0.5, 1])          # the day still running
+    led = pd.DataFrame(rows, columns=store.LEDGER_COLS)
+    out = report.ledger_summary(led, "2026-09-29")
+    cn = out["colour_next"]
+    assert cn["today"] == {"n": 300, "rate": round(160 / 300, 4)} and cn["1d"]["n"] == 1400 and cn["30d"]["n"] == 28 * 1400
+    lo, hi = cn["30d"]["ci"]
+    binom = 1.645 * np.sqrt(0.25 / cn["30d"]["n"])
+    assert lo < cn["30d"]["rate"] < hi and (hi - lo) / 2 > 1.5 * binom       # wider than independent flips would give
+    assert cn["trend"]["verdict"] == "flat"
+    assert out["reversal_k5_now"]["trend"]["verdict"] == "up" and out["reversal_k5_now"]["trend"]["change"] > 0.2
+    assert out["overall"]["30d"]["n"] == 28 * 1450 and out["overall"]["today"]["n"] == 300
+    assert out["colour_confident"]["live"]["n"] == 8 * 150
+    # only the running day exists: the layer is listed with today's numbers and nothing else
+    one = report.ledger_summary(led[led["day"] == "2026-09-29"], "2026-09-29")
+    assert one["colour_next"]["today"]["n"] == 300 and one["colour_next"]["7d"] is None

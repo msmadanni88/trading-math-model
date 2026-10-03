@@ -30,6 +30,7 @@ from .features import compute_features, feature_names, regularize
 # outcome existed - generated candles, the frozen chain, per-candle results of
 # the chain, reversal probabilities. Once written, a value is never rewritten.
 PROTECTED = re.compile(r"^(g\d*_|c\d+_in$|s\d+$|d\d+$|lk_|r\d+_)")
+DECISIONS = ("g_call",)       # columns that qualify the stored prediction of the same row
 
 
 def load_engine(path):
@@ -147,11 +148,22 @@ def step(state_dir, cache_dir, offline=False, now=None):
             if len(keep):
                 fc_new = fc_new.set_index("ts")
                 both = keep.index.intersection(fc_new.index)
+                # a decision about a prediction (is this colour call a confident one?)
+                # belongs to that prediction: it is not added to a stored prediction
+                # that this engine would have made differently
+                other = pd.Series(False, index=both)
+                if "g_p" in keep.columns and "g_p" in fc_new.columns:
+                    sp, fp = keep.loc[both, "g_p"], fc_new.loc[both, "g_p"]
+                    other = sp.notna() & ~np.isclose(sp, fp, rtol=2e-5, atol=1e-9)    # stored with 6 digits
                 for c in [c for c in keep.columns if PROTECTED.match(c)]:
                     if c not in fc_new.columns:
                         fc_new[c] = np.nan                      # a retired column stays in the archive
                     stored = keep.loc[both, c]
                     fc_new.loc[both, c] = stored.where(stored.notna(), fc_new.loc[both, c])
+                for c in DECISIONS:
+                    if c in fc_new.columns:
+                        had = keep.loc[both, c].notna() if c in keep.columns else pd.Series(False, index=both)
+                        fc_new.loc[both[(other & ~had).to_numpy()], c] = np.nan
                 fc_new = fc_new.reset_index()
         fc_tail = pd.concat([old[old["ts"] < t0], fc_new], ignore_index=True) if len(old) else fc_new
         store.write_forecasts(state_dir, fc_tail, t0)

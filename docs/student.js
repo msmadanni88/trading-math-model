@@ -91,11 +91,21 @@
   // ver: {fmt, W, H, scale, cone}. o: where a candle opens; lo / hi: 90% range of its
   // close - all log-offsets from the last real close. The chain never leaves the model's
   // own 50% range: a candle that would is drawn in the other colour (flip).
+  // How far the model stands behind a colour call with P(up) = p: 0 = close to a coin flip,
+  // 1 = confident, 2 = strong. ct: the colour caller's published lines, ascending.
+  // Compared in millionths (as in student.py).
+  function callLevel(ver, p) {
+    if (!ver.ct || !ver.ct.length) return 0;
+    const c = Math.floor(Math.abs(p - 0.5) * 1e6 + 0.5);
+    let n = 0;
+    for (const t of ver.ct) if (c >= Math.floor(t * 1e6 + 0.5)) n++;
+    return n;
+  }
   function generatePath(ver, f, sig) {
     const n = nextRaw(ver.W, f, sig);
     if (!ver.H || ver.fmt !== FORMAT) {
       const g = generate(ver.W, f, sig);
-      g.o = 0; g.lo = g.q05; g.hi = g.q95; g.flip = 0;
+      g.o = 0; g.lo = g.q05; g.hi = g.q95; g.flip = 0; g.call = 0;
       return [g];
     }
     const iq = 0.5 * (n.q75 - n.q25);
@@ -112,7 +122,7 @@
       if (flip) b = -b;
       const g = { p: r.p, b, u: Math.max(eUp - Math.max(b, 0), 0), d: Math.max(eDn - Math.max(-b, 0), 0),
         o, lo: cone * n.q05, hi: cone * n.q95, flip: flip ? 1 : 0 };
-      if (h === 1) { g.q05 = n.q05; g.q25 = n.q25; g.q75 = n.q75; g.q95 = n.q95; }
+      if (h === 1) { g.q05 = n.q05; g.q25 = n.q25; g.q75 = n.q75; g.q95 = n.q95; g.call = callLevel(ver, r.p); }
       path.push(g);
       o += b;
     }
@@ -215,7 +225,7 @@
     return { body, range, score: 0.5 * body + 0.5 * range };
   }
 
-  const api = { WIN, GRAN, FORMAT, regularize, compact, generate, generatePath, revFeatures, revRows, treeProb, revProbs,
+  const api = { WIN, GRAN, FORMAT, regularize, compact, generate, generatePath, callLevel, revFeatures, revRows, treeProb, revProbs,
     isSwing, swingNear, versionAt, candleScore };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Student = api;

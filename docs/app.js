@@ -87,6 +87,22 @@
     timeScale: { borderColor: C.line, timeVisible: true, secondsVisible: false, rightOffset: 2, barSpacing: window.innerWidth < 700 ? 6 : 11 },
     crosshair: { mode: LC.CrosshairMode.Normal },
   });
+  // A change of width (rotating a phone, resizing the window) must not push the predicted
+  // candles out of view: if the chart was showing the present, it keeps showing it.
+  let chartW = $("chart").clientWidth, edgePos = 0;
+  chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    if ($("chart").clientWidth === chartW) edgePos = chart.timeScale().scrollPosition();
+  });
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(() => {
+      const w = $("chart").clientWidth;
+      if (!w || w === chartW) return;
+      const narrow = window.innerWidth < 700, was = chartW;
+      chartW = w;
+      if ((was < 700) !== narrow || Math.abs(w - was) > 40) chart.timeScale().applyOptions({ barSpacing: narrow ? 6 : 11 });
+      if (edgePos > -10) chart.timeScale().scrollToPosition(Math.max(edgePos, 0), false);
+    }).observe($("chart"));
+  }
   const quiet = { priceLineVisible: false, lastValueVisible: false };
   // start of every frozen chain: a faint column behind the candles
   const segS = chart.addHistogramSeries({ ...quiet, priceScaleId: "seg", color: "rgba(217,215,204,0.07)",
@@ -156,7 +172,7 @@
       if (!m) continue;
       const { ver, win, f, sig, path } = m, made = Math.round(now());
       const p0 = path[0];
-      setOnce(G, nxt, { b: p0.b, u: p0.u, d: p0.d, p: p0.p, q05: p0.q05, q95: p0.q95, made });
+      setOnce(G, nxt, { b: p0.b, u: p0.u, d: p0.d, p: p0.p, q05: p0.q05, q95: p0.q95, c: p0.call, made });
       if (path.length === HZ && nxt % (HZ * GRAN) === 0) {          // a quarter hour starts: freeze the chain
         path.forEach((q, j) => setOnce(K, nxt + j * GRAN, { h: j + 1, o: q.o, b: q.b, u: q.u, d: q.d, made }));
       }
@@ -326,7 +342,7 @@
       lo.push({ time: t, value: b.q05 });
       const v = pct(scoreBar(b, k).score);
       sc.push({ time: t, value: v, color: scoreColor(v) });
-      d1.push({ time: t, value: 1 }); m1.push({ time: t, position: "inBar", shape: "circle", size: 0.4, color: dotCol(b.g.b) });
+      d1.push({ time: t, value: 1 }); m1.push({ time: t, position: "inBar", shape: "circle", size: b.g.c >= 2 ? 1.6 : b.g.c ? 1.0 : 0.4, color: dotCol(b.g.b) });
       if (isClosed) { d0.push({ time: t, value: 0 }); m0.push({ time: t, position: "inBar", shape: "circle", size: 0.4, color: dotCol(k[4] - b.o) }); }
     }
     // minutes that have not started: the rest of the live chain, and the rest of the frozen one
@@ -418,7 +434,8 @@
     }
     const up = b.g.b >= 0;
     const dir = el("div", "dir " + (up ? "up" : "down"));
-    dir.append(el("span", "arrow", up ? "▲ up" : "▼ down"), el("span", "p", `P(up) ${(b.g.p * 100).toFixed(1)}%`));
+    dir.append(el("span", "arrow", up ? "▲ up" : "▼ down"), el("span", "p", `P(up) ${(b.g.p * 100).toFixed(1)}%`),
+      el("span", "callbadge " + (b.g.c >= 2 ? "strong" : b.g.c ? "yes" : "no"), b.g.c >= 2 ? "strong call" : b.g.c ? "confident call" : "no confident call"));
     const dl = el("dl", "kv");
     kv(dl, "opens at", fmtP(b.o));
     kv(dl, "predicted close", `${fmtP(b.c)}  (${(b.g.b * 1e4).toFixed(1)} bp)`);
@@ -454,20 +471,27 @@
     }
   }
   function renderSession() {
-    let n = 0, sum = 0, dirOk = 0, dirN = 0, ln = 0, lsum = 0;
+    let n = 0, sum = 0, dirOk = 0, dirN = 0, ln = 0, lsum = 0, cN = 0, cOk = 0;
     for (const k of closed.slice(-KEEP)) {
       const b = genBar(k[0]), s = scoreBar(b, k);
-      if (s) { n++; sum += s.score; if (k[4] !== b.o) { dirN++; if ((b.g.b > 0) === (k[4] > b.o)) dirOk++; } }
+      if (s) { n++; sum += s.score; if (k[4] !== b.o) { const ok = (b.g.b > 0) === (k[4] > b.o); dirN++; if (ok) dirOk++; if (b.g.c) { cN++; if (ok) cOk++; } } }
       const q = scoreBar(lockBar(k[0]), k);
       if (q) { ln++; lsum += q.score; }
     }
     $("chartnote").textContent = n
       ? `On this chart: ${n} predicted candles, average match ${(100 * sum / n).toFixed(0)}/100, colour right ${(100 * dirOk / Math.max(dirN, 1)).toFixed(1)}%` +
+        (cN ? ` (confident and strong calls — the bigger dots: ${cOk} of ${cN})` : "") +
         (ln ? `; fixed history: ${ln} candles, average match ${(100 * lsum / ln).toFixed(0)}/100 at their real price level.` : ".")
       : "Predicted candles appear here as soon as the model's parameters and 4 hours of candles are loaded.";
   }
   const cell = (a) => (a ? pc1(a.rate) : "–");
-  const LAYERS = { colour_next: "colour of the next candle", colour_path: "colour of candles 2–15", chain_end_side: "side of price 15 min on (fixed history)", overall: "everything pooled" };
+  function ciCell(a) {                     // win rate with its 90% interval underneath
+    const td = el("td", null, cell(a));
+    if (a && a.ci) td.append(el("span", "ci", `${(100 * a.ci[0]).toFixed(1)}–${(100 * a.ci[1]).toFixed(1)}`));
+    else if (a) td.append(el("span", "ci", `n ${a.n.toLocaleString("en-US")}`));
+    return td;
+  }
+  const LAYERS = { colour_next: "colour of the next candle", colour_confident: "· its confident calls only", colour_strong: "· its strong calls only", colour_clear: "· candles that really moved", colour_path: "colour of candles 2–15", chain_end_side: "side of price 15 min on (fixed history)", overall: "everything pooled" };
   function layerName(l) {
     const m = /^reversal_k(\d+)_(now|next)$/.exec(l);
     return m ? `${m[2] === "now" ? "turn is in" : "turn coming"} · size ${m[1]}` : LAYERS[l] || l;
@@ -511,22 +535,43 @@
     const led = cloud.ledger || {};
     const rank = (l) => {                                    // candles first, then the reversal agents by size, the total last
       const m = /^reversal_k(\d+)_(now|next)$/.exec(l);
-      return m ? 10 + 2 * +m[1] + (m[2] === "next") : l === "overall" ? 999 : ["colour_next", "colour_path", "chain_end_side"].indexOf(l);
+      return m ? 10 + 2 * +m[1] + (m[2] === "next") : l === "overall" ? 999 : ["colour_next", "colour_confident", "colour_strong", "colour_clear", "colour_path", "chain_end_side"].indexOf(l);
     };
     const order = Object.keys(led).filter((l) => led[l]).sort((a, b) => rank(a) - rank(b));
     for (const l of order) {
       const b = led[l], tr = el("tr"), t = b.trend;
       const tcell = el("td", t ? "trend " + t.verdict : null, t ? `${t.verdict === "up" ? "▲" : t.verdict === "down" ? "▼" : "→"} ${(100 * t.change >= 0 ? "+" : "") + (100 * t.change).toFixed(1)}` : "–");
-      tr.append(el("td", null, layerName(l)), el("td", null, cell(b["1d"])), el("td", "model", cell(b["7d"])), el("td", null, cell(b["30d"])),
+      const c7 = ciCell(b["7d"]);
+      c7.className = "model";
+      tr.append(el("td", null, layerName(l)), el("td", null, cell(b.today)), el("td", null, cell(b["1d"])), c7, ciCell(b["30d"]),
         el("td", null, b.base == null ? "–" : pc1(b.base)), tcell);
       if (l === "overall") tr.className = "total";
+      if (l === "colour_confident" || l === "colour_strong" || l === "colour_clear") tr.className = "sub";
       lt.append(tr);
     }
     const since = cloud.live_since ? new Date(cloud.live_since * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : null;
     $("ledgernote").textContent = order.length
-      ? `Trend: the last 7 days against the 7 before, in points; → means the change is within noise. Full days only (UTC).` +
+      ? `Under each win rate: the range it would fall in 9 times out of 10 if the same days were drawn again. Trend: the last 7 days against the 7 before, in points; → means the change is within noise. "Today" is the UTC day still running.` +
+        (cloud.colour && cloud.colour.threshold ? ` A colour call is confident when P(up) is at least ${(100 * cloud.colour.threshold[0]).toFixed(1)} points from 50% and strong from ${(100 * cloud.colour.threshold[1]).toFixed(1)}: the lines that give about ${cloud.colour.per_day[0]} and ${cloud.colour.per_day[1]} calls a day, re-drawn every six hours.` : "") +
         (since ? ` These models went live on ${since}; earlier days are a replay of history in which the models saw only the past.` : "")
       : "The archive starts with the first full day.";
+    // the same numbers by market regime
+    const sl = cloud.slices, st = $("slices").tBodies[0];
+    st.replaceChildren();
+    $("slicebox").hidden = !sl;
+    if (sl) {
+      const rc = (a) => (a ? `${pc1(a.rate)}` : "–");
+      for (const kind of Object.keys(sl)) {
+        let first = true;
+        for (const [name, r] of Object.entries(sl[kind])) {
+          const tr = el("tr", first ? "kind" : null);
+          first = false;
+          tr.append(el("td", null, name), el("td", null, r.score == null ? "–" : pc(r.score)), el("td", null, rc(r.colour)),
+            el("td", null, rc(r.confident)), el("td", null, rc(r.turn_in)));
+          st.append(tr);
+        }
+      }
+    }
     const lf = $("learning");
     lf.replaceChildren();
     const L = cloud.learning;
@@ -535,6 +580,8 @@
       kv(lf, "sizing learned from the score", `body ×${L.body_scale}, reach ×${L.reach_scale}`);
       if (L.last_contest) kv(lf, "last tree-model contest", L.last_contest.promoted ? "new model won" : "old model kept");
       kv(lf, "generator versions published", String(L.versions_published));
+      const ct = cloud.colour && cloud.colour.tuned;
+      if (ct) kv(lf, "does confidence pay? last 7 days", `every minute ${pc1(ct.every_minute)} · confident ${ct.levels[0].win_rate == null ? "–" : pc1(ct.levels[0].win_rate)} · strong ${ct.levels[1].win_rate == null ? "–" : pc1(ct.levels[1].win_rate)}`);
     }
     const wbox = $("weights");
     wbox.replaceChildren();
@@ -895,7 +942,7 @@
       if (params.rev) rev = { ks: params.rev.ks, k: params.rev.k, hs: params.rev.hs };
       versions = (params.versions || []).filter((v) => v.fmt === S.FORMAT);
       await Promise.all(activeKs().map(ensureModels));
-      for (const g of latest.gen || []) setOnce(G, g[0], { b: g[1], u: g[2], d: g[3], p: g[4], q05: g[5], q95: g[8] });
+      for (const g of latest.gen || []) setOnce(G, g[0], { b: g[1], u: g[2], d: g[3], p: g[4], q05: g[5], q95: g[8], c: g[9] == null ? 0 : g[9] });
       for (const g of latest.locked || []) setOnce(K, g[0], { h: g[1], o: g[2], b: g[3], u: g[4], d: g[5] });
       for (const [kk, r] of Object.entries(latest.rev || {})) {
         const k = +kk;
@@ -958,7 +1005,7 @@
     kv(dl, "body overlap / range overlap", `${Math.round(100 * s.body)}% / ${Math.round(100 * s.range)}%`);
     const mUp = b.g.b >= 0, rUp = k[4] > b.o, flat = k[4] === b.o;
     kv(dl, "colour: model → market", `${mUp ? "green" : "red"} → ${flat ? "unchanged" : rUp ? "green" : "red"}  ${flat ? "" : mUp === rUp ? "✓ right" : "✗ wrong"}`);
-    kv(dl, "model's P(up)", (b.g.p * 100).toFixed(1) + "%");
+    kv(dl, "model's P(up)", (b.g.p * 100).toFixed(1) + "%" + (b.g.c >= 2 ? "  · strong call" : b.g.c ? "  · confident call" : "  · no confident call"));
     kv(dl, "real  O H L C", `${fmtP(k[1])}  ${fmtP(k[2])}  ${fmtP(k[3])}  ${fmtP(k[4])}`);
     kv(dl, "predicted  O H L C", `${fmtP(b.o)}  ${fmtP(b.h)}  ${fmtP(b.l)}  ${fmtP(b.c)}`);
     kv(dl, "90% range for the close", `${fmtP(b.q05)} – ${fmtP(b.q95)}` + (k !== forming ? (k[4] >= b.q05 && k[4] <= b.q95 ? "  ✓ held" : "  ✗ missed") : ""));
