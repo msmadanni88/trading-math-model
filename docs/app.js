@@ -631,7 +631,9 @@
     if (vn && vn.head) {
       const cx = vn.colour_30d || {};
       kv(rg, "cross-venue agent", `${vn.source} ${vn.inst}` + (vn.used_24h != null ? ` · read for ${pc1(vn.used_24h)} of the last 24 h` : ""));
-      if (cx.with) kv(rg, "colour right, 30 days: with it / without", `${pc1(cx.with.rate)} / ${cx.without ? pc1(cx.without.rate) : "–"}`);
+      // counted from the day the agent went live (older stored predictions were made without it)
+      if (cx.with) kv(rg, "colour right when it was read", cx.with.n < 1000 ? `${cx.with.n} predictions so far: too few to judge`
+        : `${pc1(cx.with.rate)} of ${cx.with.n.toLocaleString("en-US")}` + (cx.without ? ` · without it ${pc1(cx.without.rate)} of ${cx.without.n.toLocaleString("en-US")}` : ""));
     }
     const last = (cloud.retrain_log || []).slice(-1)[0];
     if (last) kv(rg, "last self-retrain", fmtT(last.ts) + ", " + new Date(last.ts * 1000).toLocaleDateString());
