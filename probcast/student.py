@@ -14,13 +14,15 @@ what is stored.
 """
 import numpy as np
 
-from .config import HORIZON, STUDENT_WIN
+from .config import HORIZON, REV_K, STUDENT_WIN
 
 LAM = 0.97
 FEATURES = ["bias", "z0", "z1", "z2", "m5", "m15", "m60", "lv", "rv5", "body", "wick_up", "wick_dn",
             "rng", "vr", "pos60", "min_sin", "min_cos", "top_hour", "top_quarter", "hr_sin", "hr_cos"]
 OUTPUTS = ["logit_p", "l_abs", "l_hi", "l_lo", "b05", "b25", "b75", "b95"]
 H_OUTPUTS = ["s_dir", "l_abs", "l_hi", "l_lo"]      # per extra horizon (candles 2..HORIZON)
+REV_FEATURES = FEATURES + ["d_k", "d_2k", "d_30", "is_new", "age", "run", "reject", "leg"]
+_FLIP = [1, 2, 3, 4, 5, 6, 9, 14]                   # features whose sign mirrors with the side
 OFF = 0.01
 OFF_H = 0.1
 RIDGE_H = 30.0
@@ -112,18 +114,64 @@ def generate(W, f, sig):
 def generate_path(ver, f, sig):
     """The next HORIZON candles. Candle 1 is the distilled full model; candles
     2.. come from heads fitted on real outcomes, sized by multipliers the goal
-    tuner learned for that horizon. `lo` / `hi` bound the CLOSE of each candle
-    as a log-offset from the last real close (90% cone)."""
+    tuner learned for that horizon. `o` is where each candle opens and `lo` /
+    `hi` bound its CLOSE (90% cone) - all as log-offsets from the last real close."""
     g = generate(ver["W"], f, sig)
-    g["lo"], g["hi"] = g["q05"], g["q95"]
+    g["o"], g["lo"], g["hi"] = 0.0, g["q05"], g["q95"]
     path = [g]
     if ver.get("H") is None:
         return path
+    o = g["b"]
     for j, Wh in enumerate(ver["H"]):
         d, a, e_up, e_dn, p = horizon_raw(np.asarray(Wh), f, sig)
         kb, kr = ver["scale"][j]
         b = d * a * kb
         c = ver["cone"][j]
         path.append({"p": p, "b": float(b), "u": max(kr * e_up - max(b, 0.0), 0.0),
-                     "d": max(kr * e_dn - max(-b, 0.0), 0.0), "lo": c * g["q05"], "hi": c * g["q95"]})
+                     "d": max(kr * e_dn - max(-b, 0.0), 0.0), "o": float(o), "lo": c * g["q05"], "hi": c * g["q95"]})
+        o += b
     return path
+
+
+# ---------------------------------------------------------------- reversal agent
+def rev_features(C, f, sig, side):
+    """Features for "will a swing point form in the next candles".
+    side = +1 for a top (swing high), -1 for a bottom (swing low). A bottom is
+    a top of the mirrored price, so one model serves both sides.
+    C: latest closed candles [o, h, l, c, v] (oldest first); f, sig: compact()."""
+    m = [float(x) for x in f]
+    for i in _FLIP:
+        m[i] = side * m[i]
+    if side < 0:
+        m[10], m[11] = m[11], m[10]
+    c = C[-1][3]
+    hi, lo = [r[1] for r in C[-31:]], [r[2] for r in C[-31:]]
+    if side > 0:
+        ext = hi
+        dist = lambda n: float(np.log(max(ext[-n:]) / c)) / sig
+        reject = float(np.log(hi[-1] / c)) / sig
+        leg = float(np.log(c / min(lo[-10:]))) / sig
+        is_new = 1.0 if hi[-1] >= max(hi[-REV_K - 1:-1]) else 0.0
+        best = max(ext[-10:])
+    else:
+        ext = lo
+        dist = lambda n: float(np.log(c / min(ext[-n:]))) / sig
+        reject = float(np.log(c / lo[-1])) / sig
+        leg = float(np.log(max(hi[-10:]) / c)) / sig
+        is_new = 1.0 if lo[-1] <= min(lo[-REV_K - 1:-1]) else 0.0
+        best = min(ext[-10:])
+    age = 0
+    while ext[-1 - age] != best:                 # candles since the extreme of the last 10
+        age += 1
+    run = 0
+    while run < 5 and side * (C[-1 - run][3] - C[-2 - run][3]) > 0:
+        run += 1
+    cl = lambda x, a: min(max(x, 0.0), a)
+    return np.array(m + [cl(dist(REV_K), 8), cl(dist(2 * REV_K), 8), cl(dist(30), 8), is_new, age / 10.0,
+                         run / 5.0, cl(reject, 8), cl(leg, 12)])
+
+
+def rev_probs(R, phi):
+    """R: (horizons, features). Probability that the candle j steps ahead is a swing point."""
+    z = np.clip(np.asarray(R) @ phi, -30, 30)
+    return 1.0 / (1.0 + np.exp(-z))

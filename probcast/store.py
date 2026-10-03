@@ -3,7 +3,7 @@
 Plain-text CSV, one file per UTC day: a run appends a few lines to one small
 file, so git stores only tiny deltas.
 
-  candles/YYYY-MM-DD.csv    forecasts/YYYY-MM-DD.csv
+  candles/YYYY-MM-DD.csv    forecasts/YYYY-MM-DD.csv    reversals/YYYY-MM-DD.csv
   live/latest.json  live/params.json      what the site reads
   reports/latest.md|json  status.json
 """
@@ -101,6 +101,43 @@ def clean(o):
     return o
 
 
+CALL_COLS = ["made_ts", "for_ts", "side", "p", "level", "eff", "hit"]
+
+
+def read_calls(sd, since_ts=None):
+    files = _files(sd, "reversals", since_ts)
+    if not files:
+        return pd.DataFrame(columns=CALL_COLS)
+    return pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
+
+
+def merge_calls(sd, events):
+    """Append new reversal calls and fill in outcomes. A stored call is never
+    edited: a call that already exists is left as it is, and an outcome is
+    written only once."""
+    if not events:
+        return
+    days = {}
+    for kind, e in events:
+        ts = e["for_ts"] if kind == "new" else e[0]
+        days.setdefault(day(ts), []).append((kind, e))
+    for d, evs in days.items():
+        path = os.path.join(sd, "reversals", d + ".csv")
+        rows = {}
+        if os.path.exists(path):
+            for r in pd.read_csv(path).to_dict("records"):
+                rows[(int(r["for_ts"]), int(r["side"]))] = r
+        for kind, e in evs:
+            if kind == "new":
+                rows.setdefault((e["for_ts"], e["side"]), dict(e, hit=np.nan))
+            else:
+                r = rows.get((e[0], e[1]))
+                if r is not None and not (r["hit"] == r["hit"]):        # outcome still empty
+                    r["hit"] = e[2]
+        df = pd.DataFrame([rows[k] for k in sorted(rows)], columns=CALL_COLS)
+        _atomic_text(path, lambda f, df=df: df.to_csv(f, index=False, float_format="%.6g", lineterminator="\n"))
+
+
 def write_json(path, obj, indent=None):
     _atomic_text(path, lambda f: json.dump(clean(obj), f, indent=indent, allow_nan=False,
                                            separators=(",", ":") if indent is None else None))
@@ -115,7 +152,7 @@ def read_json(path):
 
 def prune(sd, now, keep_forecast_days=180, keep_candle_days=400):
     """Old daily files are dropped so the state branch stays small."""
-    for kind, days in (("forecasts", keep_forecast_days), ("candles", keep_candle_days)):
+    for kind, days in (("forecasts", keep_forecast_days), ("reversals", keep_forecast_days), ("candles", keep_candle_days)):
         cut = day(now - days * 86400)
         for p in glob.glob(os.path.join(sd, kind, "*.csv")):
             if os.path.basename(p)[:10] < cut:

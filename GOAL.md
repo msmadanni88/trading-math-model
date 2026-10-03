@@ -58,5 +58,31 @@ candle existed:
   time, but the price path itself gets less certain with every step: the range
   roughly doubles by the fifth candle.
 
+## The fixed record
+
+Every minute's candle is also written down five minutes before it starts, at
+the price level the model expected then. That entry is never touched again:
+not by a later, better-informed forecast, not when an older engine copy
+re-learns a minute, not when the whole engine is rebuilt. The site draws it as
+its own layer, so the generated chart and the real chart can be compared even
+when the market has moved far away. Its score is computed at the real price
+level and is much lower than the one-minute score - that gap is the honest
+size of the five-minute problem.
+
+## The reversal agent has its own goal
+
+**Call the minute where price turns** (the highest high / lowest low of the 5
+candles on each side), up to 5 minutes before it happens. A call is a hit if
+the turn comes within one candle of the minute it names. The agent is allowed
+to call on roughly 8% of the minutes per side, and is judged on the hit rate
+of those calls against two references measured on the same candles:
+
+- chance: how often a turn sits within one candle of any minute anyway
+- naive rule: "the candle after a fresh 5-candle high is a top" (and mirrored)
+
+Calls are stored when they are made and never edited; only the outcome is
+filled in later. Beating chance is easy (a fresh high is already half of a
+top); beating the naive rule is the real test.
+
 A score that jumps far above this without a new information source should be
 treated as a bug (look-ahead) until proven otherwise.

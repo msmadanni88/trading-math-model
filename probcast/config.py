@@ -24,3 +24,9 @@ STUDENT_ROWS_H = 10080         # candles 2..HORIZON learn from one week of real 
 STUDENT_STEP = 300             # a new version can become effective every 5 minutes
 STUDENT_LEAD = 420             # ... and never sooner than 7 minutes after it was fitted
 STUDENT_WIN = 240              # candles the live generator looks back on
+
+# reversal agent
+REV_K = 5                      # a swing point is the highest high / lowest low of the K candles on each side
+REV_H = 5                      # it is called up to H candles before it happens
+REV_TRAIN = 14400              # rows (10 days) the tree model of the reversal agent trains on
+REV_BUDGET = 0.08              # share of minutes on which the agent is allowed to make a call, per side

@@ -1,7 +1,8 @@
 // Live generator - mirror of probcast/student.py (see that file for the idea).
 // tests/parity.mjs checks that both implementations return the same numbers.
 (function (root) {
-  const WIN = 240, LAM = 0.97, OFF = 0.01, OFF_H = 0.1, GRAN = 60;
+  const WIN = 240, LAM = 0.97, OFF = 0.01, OFF_H = 0.1, GRAN = 60, REV_K = 5;
+  const FLIP = [1, 2, 3, 4, 5, 6, 9, 14];
   const clip = (x, a) => Math.max(-a, Math.min(a, x));
 
   // candles: array of [ts, o, h, l, c, v] sorted by time. Fills missing minutes
@@ -79,9 +80,10 @@
   // lo / hi bound the close of each candle as a log-offset from the last real close.
   function generatePath(ver, f, sig) {
     const g = generate(ver.W, f, sig);
-    g.lo = g.q05; g.hi = g.q95;
+    g.o = 0; g.lo = g.q05; g.hi = g.q95;
     const path = [g];
     if (!ver.H) return path;
+    let o = g.b;
     ver.H.forEach((Wh, j) => {
       const y = Wh.map((row) => row.reduce((s, w, i) => s + w * f[i], 0));
       const p = Math.min(Math.max(0.5 + 0.5 * y[0], 0.02), 0.98);
@@ -91,10 +93,50 @@
       const c = ver.cone[j];
       path.push({
         p, b, u: Math.max(kr * size(y[2]) - Math.max(b, 0), 0), d: Math.max(kr * size(y[3]) - Math.max(-b, 0), 0),
-        lo: c * g.q05, hi: c * g.q95,
+        o, lo: c * g.q05, hi: c * g.q95,
       });
+      o += b;
     });
     return path;
+  }
+
+  // ---- reversal agent (mirror of rev_features / rev_probs in probcast/student.py)
+  // side = +1 top (swing high), -1 bottom (swing low). C: closed candles [ts,o,h,l,c,v].
+  function revFeatures(C, f, sig, side) {
+    const m = f.slice();
+    for (const i of FLIP) m[i] = side * m[i];
+    if (side < 0) { const t = m[10]; m[10] = m[11]; m[11] = t; }
+    const n = C.length, c = C[n - 1][4];
+    const hi = [], lo = [];
+    for (let i = Math.max(0, n - 31); i < n; i++) { hi.push(C[i][2]); lo.push(C[i][3]); }
+    const last = (a, k) => a.slice(a.length - k);
+    const ext = side > 0 ? hi : lo;
+    const dist = (k) => (side > 0 ? Math.log(Math.max(...last(ext, k)) / c) : Math.log(c / Math.min(...last(ext, k)))) / sig;
+    const reject = (side > 0 ? Math.log(hi[hi.length - 1] / c) : Math.log(c / lo[lo.length - 1])) / sig;
+    const leg = (side > 0 ? Math.log(c / Math.min(...last(lo, 10))) : Math.log(Math.max(...last(hi, 10)) / c)) / sig;
+    const prev = ext.slice(ext.length - REV_K - 1, ext.length - 1);
+    const isNew = side > 0 ? (hi[hi.length - 1] >= Math.max(...prev) ? 1 : 0) : (lo[lo.length - 1] <= Math.min(...prev) ? 1 : 0);
+    const best = side > 0 ? Math.max(...last(ext, 10)) : Math.min(...last(ext, 10));
+    let age = 0;
+    while (ext[ext.length - 1 - age] !== best) age++;
+    let run = 0;
+    while (run < 5 && side * (C[n - 1 - run][4] - C[n - 2 - run][4]) > 0) run++;
+    const cl = (x, a) => Math.min(Math.max(x, 0), a);
+    return m.concat([cl(dist(REV_K), 8), cl(dist(2 * REV_K), 8), cl(dist(30), 8), isNew, age / 10, run / 5, cl(reject, 8), cl(leg, 12)]);
+  }
+  function revProbs(R, phi) {
+    return R.map((row) => {
+      const z = Math.max(-30, Math.min(30, row.reduce((s, w, i) => s + w * phi[i], 0)));
+      return 1 / (1 + Math.exp(-z));
+    });
+  }
+  // is candle i a swing high (side +1) / swing low (side -1) of order REV_K? Needs K candles on both sides.
+  function isSwing(C, i, side) {
+    if (i - REV_K < 0 || i + REV_K >= C.length) return null;
+    for (let k = i - REV_K; k <= i + REV_K; k++) {
+      if (side > 0 ? C[k][2] > C[i][2] : C[k][3] < C[i][3]) return false;
+    }
+    return true;
   }
 
   // parameter version that was already published when the minute `ts` started
@@ -117,7 +159,7 @@
     return { body, range, score: 0.5 * body + 0.5 * range };
   }
 
-  const api = { WIN, GRAN, regularize, compact, generate, generatePath, versionAt, candleScore };
+  const api = { WIN, GRAN, REV_K, regularize, compact, generate, generatePath, revFeatures, revProbs, isSwing, versionAt, candleScore };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Student = api;
 })(typeof self !== "undefined" ? self : this);

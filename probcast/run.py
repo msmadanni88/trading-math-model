@@ -11,6 +11,7 @@ import gzip
 import json
 import os
 import pickle
+import re
 import sys
 import time
 import traceback
@@ -23,6 +24,9 @@ from . import data, report, store
 from .config import BUF, GRAN, PRODUCT, REPLAY_DAYS, START, STUDENT_LEAD, STUDENT_STEP
 from .engine import STATE_VERSION, Engine
 from .features import compute_features, feature_names, regularize
+
+
+PROTECTED = re.compile(r"^(g\d?_|c\d_in$)")       # every column of a generated candle
 
 
 def load_engine(path):
@@ -114,19 +118,25 @@ def step(state_dir, cache_dir, offline=False, now=None):
     eff = -(-(int(now) + STUDENT_LEAD) // STUDENT_STEP) * STUDENT_STEP
     eng.fit_student(eff, np.iinfo(np.int64).max)
 
+    # reversal calls: appended, never edited (see store.merge_calls)
+    store.merge_calls(state_dir, eng.rev.events)
+    eng.rev.events = []
+
     fc_new = pd.DataFrame(new_rows)
     if len(fc_new):
         t0 = int(fc_new["ts"].iloc[0])
         old = store.read_forecasts(state_dir, t0 - 86400)
-        if len(old) and not replay:
-            # a generated candle that was already stored is never rewritten,
-            # even when an older engine copy had to re-learn that minute
+        if len(old):
+            # THE FIXED RECORD: whatever was generated for a candle and already
+            # stored is never rewritten - not when an older engine copy re-learns
+            # that minute, and not when the whole engine is rebuilt.
             keep = old[(old["ts"] >= t0) & old["g_b"].notna()].set_index("ts")
             if len(keep):
-                gcols = [c for c in fc_new.columns if c.startswith("g_")]
+                prot = [c for c in fc_new.columns if PROTECTED.match(c)]
                 fc_new = fc_new.set_index("ts")
                 both = keep.index.intersection(fc_new.index)
-                fc_new.loc[both, gcols] = keep.loc[both, gcols]
+                for c in prot:
+                    fc_new.loc[both, c] = keep.loc[both, c] if c in keep.columns else np.nan
                 fc_new = fc_new.reset_index()
         fc_tail = pd.concat([old[old["ts"] < t0], fc_new], ignore_index=True) if len(old) else fc_new
         store.write_forecasts(state_dir, fc_tail, t0)

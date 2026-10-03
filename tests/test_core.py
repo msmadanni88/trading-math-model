@@ -239,15 +239,22 @@ def test_write_js_parity_fixture(tmp_path):
     W = rng.normal(size=(len(student.OUTPUTS), len(student.FEATURES))) * 0.2
     H = rng.normal(size=(4, len(student.H_OUTPUTS), len(student.FEATURES))) * 0.1
     ver = {"W": W, "H": H, "scale": [[1.1, 1.4], [1.0, 1.3], [0.9, 1.2], [1.2, 1.6]], "cone": [1.4, 1.7, 2.0, 2.3]}
+    R = rng.normal(size=(6, len(student.REV_FEATURES))) * 0.3
+    hi, lo = df["high"].to_numpy(), df["low"].to_numpy()
+    swings = [[int(i), bool(hi[i] >= hi[i - 5:i + 6].max()), bool(lo[i] <= lo[i - 5:i + 6].min())] for i in (100, 257, 333, 480, 612)]
     cases = []
     for end in (300, 455, 640, len(df) - 1):
         nts = int(df["ts"].iloc[end]) + GRAN
         f, sig = student.compact(C[end - STUDENT_WIN:end + 1], nts)
+        Cw = C[end - STUDENT_WIN:end + 1]
+        phis = [student.rev_features(Cw, f, sig, sd) for sd in (1, -1)]
         cases.append({"last_ts": int(df["ts"].iloc[end]), "f": f.tolist(), "sig": sig,
-                      "gen": student.generate(W, f, sig), "path": student.generate_path(ver, f, sig)})
+                      "gen": student.generate(W, f, sig), "path": student.generate_path(ver, f, sig),
+                      "phi": [x.tolist() for x in phis], "rev": [student.rev_probs(R, x).tolist() for x in phis]})
     sc = goal.candle_score(0.0011, 0.0004, 0.0002, 0.0001, -0.0007, 0.0009, -0.0012)
     out = {"raw": raw, "n_regular": len(df), "W": W.tolist(), "cases": cases,
            "ver": {"W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"]},
+           "R": R.tolist(), "swings": swings,
            "score": [float(x) for x in sc]}
     path = os.environ.get("PARITY_FIXTURE", str(tmp_path / "parity.json"))
     with open(path, "w") as fh:
@@ -283,3 +290,63 @@ def test_restoring_an_older_engine_gives_the_same_record():
     # features come from differently sized tails -> last-digit float noise only
     d = np.abs(a[cols].to_numpy() - b[cols].to_numpy()) / (np.abs(a[cols].to_numpy()) + 1e-12)
     assert np.nanmax(d) < 1e-6, np.nanmax(d)
+
+
+def test_reversal_agent_labels_learning_and_calls():
+    from probcast.agents.reversal import ReversalAgent
+    from probcast.config import REV_H, REV_K
+    df = regularize(synth(6400, seed=31))
+    e = Engine()
+    run_engine(e, df, 0)
+    rv = e.rev
+    # the label ring holds the true swing status of the candles that are K back
+    hi, lo = df["high"].to_numpy(), df["low"].to_numpy()
+    n = len(df)
+    for back in range(0, 6):
+        i = n - 1 - REV_K - back
+        want = [float(hi[i] >= hi[i - REV_K:i + REV_K + 1].max()), float(lo[i] <= lo[i - REV_K:i + REV_K + 1].min())]
+        assert list(rv.lab.back(back)) == want
+    assert rv.n_fit > 1500 and np.all(np.isfinite(rv.W))
+    news = [x[1] for x in rv.events if x[0] == "new"]
+    hits = [x[1] for x in rv.events if x[0] == "hit"]
+    assert len(news) > 10 and len(hits) > 5
+    for c in news:               # a call names the candle that just closed or one of the next H
+        assert c["made_ts"] - GRAN <= c["for_ts"] <= c["made_ts"] - GRAN + REV_H * GRAN
+    # every outcome matches the definition: a swing of that side within one candle
+    ts = df["ts"].to_numpy()
+    pos = {int(t): k for k, t in enumerate(ts)}
+    for for_ts, side, hit in hits:
+        k = pos[for_ts]
+        ext = hi if side > 0 else -lo
+        want = any(ext[m] >= ext[m - REV_K:m + REV_K + 1].max() for m in (k - 1, k, k + 1))
+        assert hit == int(want)
+    # no two calls of the same side within two minutes of each other
+    seen = {(c["for_ts"], c["side"]) for c in news}
+    assert not any((t + d * GRAN, s) in seen for t, s in seen for d in (1, 2))
+
+
+def test_stored_calls_and_generated_candles_are_never_rewritten(tmp_path):
+    sd = str(tmp_path)
+    c1 = {"made_ts": 1000, "for_ts": 1060, "side": 1, "p": 0.4, "level": 2000.0, "eff": 900}
+    store.merge_calls(sd, [("new", c1)])
+    store.merge_calls(sd, [("new", dict(c1, p=0.9, level=1.0)), ("hit", (1060, 1, 1))])     # same call again
+    store.merge_calls(sd, [("hit", (1060, 1, 0))])                                           # outcome again
+    got = store.read_calls(sd).to_dict("records")
+    assert len(got) == 1 and got[0]["p"] == 0.4 and got[0]["level"] == 2000.0 and got[0]["hit"] == 1
+    from probcast.run import PROTECTED
+    cols = ["g_b", "g_u", "g_p", "g_95", "g_eff", "g2_b", "g5_o", "c3_in", "t_b", "y", "cal_50", "cp_prob", "loss_garch"]
+    assert [c for c in cols if PROTECTED.match(c)] == cols[:8]
+
+
+def test_locked_layer_offsets_match_the_generated_path():
+    """The fixed record of minute M is candle 5 of the path made five minutes
+    before; its stored opening offset must equal the sum of that path's first
+    four bodies, which are stored on the rows in between."""
+    from probcast.report import add_locked
+    e = Engine()
+    fc = pd.DataFrame(run_engine(e, regularize(synth(4400, seed=41)), 0))
+    x = fc[fc["g5_o"].notna()].iloc[-50:]
+    chain = (fc["g_b"].shift(4) + fc["g2_b"].shift(3) + fc["g3_b"].shift(2) + fc["g4_b"].shift(1)).loc[x.index]
+    assert len(x) == 50 and np.allclose(x["g5_o"], chain, rtol=0, atol=1e-12)
+    lk = add_locked(fc.drop(columns=["g5_o"]))                    # old rows: rebuilt from the chain
+    assert np.allclose(lk.loc[x.index, "lk_o"], x["g5_o"], atol=1e-12)

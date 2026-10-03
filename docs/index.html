@@ -29,27 +29,37 @@
 <main class="layout">
   <div class="maincol">
   <section class="chartcard">
-    <div class="legend" aria-label="Legend">
-      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-up"/><rect x="3" y="5" width="8" height="8" class="f-up"/></svg>real, up</span>
-      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-dn"/><rect x="3" y="5" width="8" height="8" class="f-dn"/></svg>real, down</span>
-      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-gen"/><line x1="7" y1="13" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="o-gen"/></svg>generated, up (hollow)</span>
-      <span class="key"><svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="f-gen"/></svg>generated, down (filled)</span>
-      <span class="key"><svg width="20" height="18" aria-hidden="true"><line x1="1" y1="9" x2="19" y2="9" class="s-band"/></svg>90% range</span>
-      <span class="key"><span class="ramp" aria-hidden="true"></span>match 1–100 (bars)</span>
-      <label class="toggle"><input type="checkbox" id="t-real" checked> real</label>
-      <label class="toggle"><input type="checkbox" id="t-gen" checked> generated</label>
-      <label class="toggle"><input type="checkbox" id="t-band" checked> range</label>
-      <label class="toggle"><input type="checkbox" id="t-score" checked> match</label>
+    <div class="layers" role="group" aria-label="Layers on the chart: tick to show, untick to hide">
+      <label class="chip"><input type="checkbox" id="t-real" checked>
+        <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="17" class="s-up"/><rect x="3" y="5" width="8" height="8" class="f-up"/></svg>real</label>
+      <label class="chip"><input type="checkbox" id="t-gen" checked>
+        <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-gen"/><line x1="7" y1="13" x2="7" y2="17" class="s-gen"/><rect x="3" y="5" width="8" height="8" class="o-gen"/></svg>generated · 1 min ahead</label>
+      <label class="chip"><input type="checkbox" id="t-lock" checked>
+        <svg width="14" height="18" aria-hidden="true"><line x1="7" y1="1" x2="7" y2="5" class="s-lock"/><line x1="7" y1="13" x2="7" y2="17" class="s-lock"/><rect x="3" y="5" width="8" height="8" class="o-lock"/></svg>fixed record · locked 5 min ahead</label>
+      <label class="chip"><input type="checkbox" id="t-band" checked>
+        <svg width="20" height="18" aria-hidden="true"><line x1="1" y1="9" x2="19" y2="9" class="s-band"/></svg>90% range</label>
+      <label class="chip"><input type="checkbox" id="t-score" checked><span class="ramp" aria-hidden="true"></span>match 1–100</label>
+      <label class="chip"><input type="checkbox" id="t-dots" checked>
+        <svg width="20" height="18" aria-hidden="true"><circle cx="5" cy="9" r="3.2" class="f-up"/><circle cx="15" cy="9" r="3.2" class="f-dn"/></svg>colours: model vs market</label>
+      <label class="chip"><input type="checkbox" id="t-rev" checked>
+        <svg width="14" height="18" aria-hidden="true"><path d="M2 4h10L7 11z" class="f-warn"/></svg>reversal calls</label>
     </div>
+    <p class="muted small hint">Generated and fixed-record candles: hollow = up, filled = down. A candle in the record is written once, before its minute starts, and is never redrawn.</p>
     <div class="readout" id="readout" aria-live="off"></div>
-    <div id="chart" role="img" aria-label="Candlestick chart: real one-minute candles with the model's generated candles overlaid"></div>
+    <div class="chartwrap" id="chartwrap">
+      <div id="chart" role="img" aria-label="Candlestick chart: real one-minute candles with the model's generated candles overlaid"></div>
+      <div class="countdown" id="countdown" hidden></div>
+      <span class="rowlab" id="lab-model" hidden>model</span>
+      <span class="rowlab" id="lab-market" hidden>market</span>
+      <div class="inspector" id="inspector" hidden></div>
+    </div>
     <p class="note" id="chartnote"></p>
   </section>
   <div class="under">
     <section class="card">
       <h2>Goal: match the real candle</h2>
       <p class="muted small">Match 100 = identical candle. Half of it is body overlap (zero when the colour is wrong), half is high–low range overlap.</p>
-      <table class="score" id="score"><thead><tr><th>window</th><th>model</th><th>typical</th><th>repeat</th><th>colour right</th></tr></thead><tbody></tbody></table>
+      <table class="score" id="score"><thead><tr><th>window</th><th>model</th><th>typical</th><th>repeat</th><th>colour right</th><th>locked</th></tr></thead><tbody></tbody></table>
       <p class="muted small" id="scorenote"></p>
       <h3>Generated further ahead, last 24h</h3>
       <table class="score" id="ahead"><thead><tr><th>ahead</th><th>match</th><th>colour right</th><th>90% range held</th></tr></thead><tbody></tbody></table>
@@ -70,6 +80,13 @@
       <div class="nextgrid" id="next">
         <p class="muted">waiting for the model…</p>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Reversal agent</h2>
+      <p class="muted small">Its only job: call the minute where price will turn — the highest high or lowest low of the 5 candles on each side — up to 5 minutes before. A call is a hit if the turn comes within one candle of it. Goal: beat chance and beat the naive rule.</p>
+      <table class="score" id="rev"><thead><tr><th>window</th><th>calls</th><th>hit rate</th><th>naive rule</th><th>chance</th></tr></thead><tbody></tbody></table>
+      <dl class="facts" id="revfacts"></dl>
     </section>
 
     <section class="card">

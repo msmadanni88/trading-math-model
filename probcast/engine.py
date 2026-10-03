@@ -15,13 +15,14 @@ import numpy as np
 from . import student
 from .agents.learners import Lgbm
 from .agents.registry import forecast_agents, shape_agents, signal_agents
-from .config import (GRAN, HORIZON, LGBM_EVERY, RETRAIN_EVERY, STUDENT_LEAD, STUDENT_ROWS,
+from .agents.reversal import ReversalAgent
+from .config import (GRAN, HORIZON, LGBM_EVERY, RETRAIN_EVERY, REV_H, STUDENT_LEAD, STUDENT_ROWS,
                      STUDENT_ROWS_H, STUDENT_STEP, STUDENT_WIN, TRAIN_WINDOW)
 from .core import BOCPD, QUANTILES, pinball
 from .features import feature_names
 from .goal import candle_score
 
-STATE_VERSION = 3            # bump when a change makes old saved state invalid
+STATE_VERSION = 4            # bump when a change makes old saved state invalid
 EXTRA = ["cp_prob", "log_run", "bocpd_lsd"]
 BP = 1e4
 NQ = len(QUANTILES)
@@ -203,6 +204,11 @@ class Engine:
         self.tuners_h = [GoalTuner() for _ in range(HORIZON - 1)]
         self.cone = [float(np.sqrt(h)) for h in range(2, HORIZON + 1)]
         self.multi = {}                      # target ts -> {h: what was generated h candles ahead}
+        # reversal agent and the rows its browser-side copy is distilled from
+        self.rev = ReversalAgent()
+        nr = len(student.REV_FEATURES)
+        self.rP = Hist(STUDENT_ROWS_H, (2, nr))
+        self.rL = Hist(STUDENT_ROWS_H, (2, REV_H + 1))
         self.cum = 0.0                       # cumulative log return (to score the cones)
         self.simulate_publish = True         # replay mode: emulate a cloud run every STUDENT_STEP
 
@@ -217,6 +223,10 @@ class Engine:
             info = e.retrain(hist)
             if info is not None:
                 entry[e.name] = info
+        if self.n % every_l == 0:
+            info = self.rev.retrain()
+            if info is not None:
+                entry["reversal"] = info
         if len(entry) > 1:
             self.retrain_log.append(entry)
             self.retrain_log = self.retrain_log[-60:]
@@ -255,8 +265,16 @@ class Engine:
                 o = oY[idx[use]]
                 H.append(student.fit(Xa[use], student.outcome_targets(o[:, 0], o[:, 1], o[:, 2], Sa[use]), student.RIDGE_H))
             H = None if H is None else rnd(np.array(H))
+        # reversal agent: linear copy of its teacher (same refit rhythm as the heads above)
+        if self.simulate_publish and prev is not None and prev.get("R") is not None and eff % 1800 != 0:
+            R = prev["R"]
+        else:
+            Xr = self.rP.view()[ok][-STUDENT_ROWS:].reshape(-1, self.rP.a.shape[-1])
+            Yr = self.rL.view()[ok][-STUDENT_ROWS:].reshape(-1, REV_H + 1)
+            fin = np.isfinite(Yr).all(1)
+            R = rnd(student.fit(Xr[fin], Yr[fin])) if fin.sum() >= 2000 else None
         self.versions.append({
-            "eff": int(eff), "W": W, "H": H,
+            "eff": int(eff), "W": W, "H": H, "R": R, "rt": float(f"{self.rev.thr:.4g}"),
             "scale": [[float(x) for x in t.scales()] for t in self.tuners_h],
             "cone": [float(f"{c:.6g}") for c in self.cone],
             "n": int(len(X)), "r2": [round(float(x), 3) for x in r2]})
@@ -271,6 +289,8 @@ class Engine:
             if v["eff"] not in have:
                 self.versions.append({"eff": int(v["eff"]), "W": np.array(v["W"], float),
                                       "H": None if v.get("H") is None else np.array(v["H"], float),
+                                      "R": None if v.get("R") is None else np.array(v["R"], float),
+                                      "rt": v.get("rt"),
                                       "scale": v.get("scale"), "cone": v.get("cone"), "n": 0, "r2": []})
         self.versions = sorted(self.versions, key=lambda v: v["eff"])[-60:]
 
@@ -333,7 +353,11 @@ class Engine:
                 e = ahead.get(hz)
                 if e is None:
                     row.update({f"g{hz}_b": np.nan, f"g{hz}_u": np.nan, f"g{hz}_d": np.nan, f"c{hz}_in": np.nan})
+                    if hz == HORIZON:
+                        row["g5_o"] = np.nan
                     continue
+                if hz == HORIZON:
+                    row["g5_o"] = e["o"]            # where that candle opens, relative to the close it was made from
                 inside = e["lo"] <= self.cum - e["cum0"] <= e["hi"]
                 row.update({f"g{hz}_b": e["b"], f"g{hz}_u": e["u"], f"g{hz}_d": e["d"], f"c{hz}_in": float(inside)})
                 # feedback: the goal tuner and the cone width of that horizon learn from the result
@@ -380,6 +404,17 @@ class Engine:
             q = e.predict(ctx)
             if q is not None and np.all(np.isfinite(q)):
                 exp_q[e.name] = np.asarray(q, float)
+        # reversal agent: learn from the swing label that just became known, then look ahead
+        f = sig = phi_t = phi_b = rev_teacher = None
+        if len(self.candles) == STUDENT_WIN + 1:
+            cv = self.candles.view()
+            f, sig = student.compact(cv, nxt)
+            phi_t, phi_b = student.rev_features(cv, f, sig, 1), student.rev_features(cv, f, sig, -1)
+        self.rev.observe(h, l, phi_t, phi_b)
+        self.rev.settle(int(ts), GRAN)
+        if phi_t is not None:
+            rev_teacher = self.rev.predict(phi_t, phi_b)
+
         P = {"x": x, "sigma": sigma, "exp_q": exp_q, "w": {}, "ens": None, "cal": None, "p_up": float("nan"),
              "cp_prob": cp, "exp_run": er, "for_ts": nxt, "teacher_gen": None, "gen": None, "base": None, "path": None}
         if exp_q and sigma:
@@ -388,17 +423,19 @@ class Engine:
             cal = self.calib.apply(ens, sigma)
             P.update(w=w, ens=ens, cal=cal, p_up=p_up(cal, 0.02 * sigma))
             ext = self.shapers[0].predict(ctx)          # reach above / below the last close
-            if ext is not None and len(self.candles) == STUDENT_WIN + 1:
+            if ext is not None and f is not None:
                 P["base"] = (1.0 if P["p_up"] >= 0.5 else -1.0, median_abs(cal), float(ext[0]), float(ext[1]))
                 kb, kr = self.tuner.scales()
                 P["teacher_gen"] = self.tuner.candle(P["base"], kb, kr)
                 a, e_up, e_dn = P["base"][1] * kb, P["base"][2] * kr, P["base"][3] * kr
                 # --- student: what the site can compute by itself -------------
-                f, sig = student.compact(self.candles.view(), nxt)
                 self.sX.add(f)
                 self.sY.add(student.teacher_targets(P["p_up"], a, e_up, e_dn, cal[0], cal[2], cal[6], cal[8], sig))
                 self.sT.add(nxt)
                 self.sS.add(sig)
+                self.rP.add(np.vstack([phi_t, phi_b]))
+                pt = np.clip(rev_teacher, 1e-3, 1 - 1e-3)
+                self.rL.add(np.log(pt / (1 - pt)) if self.rev.ready() else np.nan)
                 if self.simulate_publish and nxt % STUDENT_STEP == 0:
                     self.fit_student(nxt, nxt - STUDENT_LEAD)
                 ver = self.version_at(nxt)
@@ -408,7 +445,10 @@ class Engine:
                     for j, g in enumerate(path[1:]):
                         base = student.horizon_raw(ver["H"][j], f, sig)[:4]
                         self.multi.setdefault(nxt + (j + 1) * GRAN, {})[j + 2] = dict(
-                            b=g["b"], u=g["u"], d=g["d"], lo=g["lo"], hi=g["hi"], base=base, cum0=self.cum)
+                            b=g["b"], u=g["u"], d=g["d"], o=g["o"], lo=g["lo"], hi=g["hi"], base=base, cum0=self.cum)
                     P["path"] = path
+                    if ver.get("R") is not None:       # official reversal calls, from the published copy
+                        probs = np.vstack([student.rev_probs(ver["R"], phi_t), student.rev_probs(ver["R"], phi_b)])
+                        self.rev.call(int(ts), GRAN, probs, ver["rt"], ver["eff"])
         self.pending = P
         return row

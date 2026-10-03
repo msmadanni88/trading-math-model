@@ -10,6 +10,7 @@
   --up: #199e70;
   --down: #e66767;
   --gen: #3987e5;
+  --lock: #d9d7cc;
   --warn: #d9a13a;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Roboto Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -115,3 +116,27 @@ h3 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 12px 0 0; 
 .maincol { display: grid; gap: 16px; min-width: 0; }
 .under { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
 @media (max-width: 980px) { .under { grid-template-columns: minmax(0, 1fr); } }
+
+.layers { display: flex; flex-wrap: wrap; gap: 6px 8px; padding: 0 4px 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px 2px 8px; background: var(--surface-2); user-select: none; }
+.chip input { accent-color: var(--gen); margin: 0; }
+.chip:has(input:not(:checked)) { opacity: 0.55; }
+.s-lock { stroke: var(--lock); stroke-width: 1.5; } .o-lock { fill: none; stroke: var(--lock); stroke-width: 1.5; }
+.f-warn { fill: var(--warn); }
+.hint { padding: 0 4px 4px; }
+.chartwrap { position: relative; }
+.countdown { position: absolute; right: 0; text-align: center; font: 11px/16px var(--mono); color: var(--surface);
+  background: rgba(255,255,255,0.78); border-radius: 0 0 2px 2px; pointer-events: none; z-index: 3; }
+.rowlab { position: absolute; left: 6px; font: 10px/14px var(--mono); color: var(--text-3); pointer-events: none; z-index: 3;
+  background: rgba(26,26,25,0.7); padding: 0 3px; border-radius: 2px; }
+.inspector { position: absolute; z-index: 5; background: var(--surface-2); border: 1px solid #45453f; border-radius: 8px;
+  padding: 10px 12px 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.5); font-size: 12.5px; max-width: calc(100% - 16px); }
+.ihead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; color: var(--text-2); }
+.iclose { background: none; border: 0; color: var(--text-2); font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 6px; margin: -4px -6px 0 0; }
+.iclose:hover, .iclose:focus-visible { color: var(--text); }
+.ibig { margin: 2px 0 8px; }
+.ibig .num { font: 600 28px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.inspector .kv { grid-template-columns: auto auto; gap: 3px 14px; font-size: 12px; }
+.inspector .kv dd { white-space: pre-wrap; }
+.ahead li { grid-template-columns: auto auto auto 1fr; }

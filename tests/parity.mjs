@@ -21,9 +21,18 @@ for (const c of fx.cases) {
   const path = S.generatePath(fx.ver, f, sig);
   check(path.length === c.path.length && path.length === 5, `path length ${path.length}`);
   path.forEach((q, h) => { for (const k of Object.keys(c.path[h])) check(close(q[k], c.path[h][k]), `path[${h}].${k}: ${q[k]} vs ${c.path[h][k]}`); });
+  [1, -1].forEach((side, si) => {
+    const phi = S.revFeatures(reg.slice(end - S.WIN, end + 1), f, sig, side);
+    check(phi.length === c.phi[si].length, "reversal feature count");
+    phi.forEach((x, i) => check(close(x, c.phi[si][i]), `rev feature side ${side} #${i}: ${x} vs ${c.phi[si][i]}`));
+    S.revProbs(fx.R, phi).forEach((p, j) => check(close(p, c.rev[si][j]), `rev prob side ${side} h${j}`));
+  });
 }
 const s = S.candleScore({ b: 0.0011, u: 0.0004, d: 0.0002 }, 0.0001, -0.0007, 0.0009, -0.0012);
 check(close(s.body, fx.score[0]) && close(s.range, fx.score[1]) && close(s.score, fx.score[2]), "candle score");
+for (const [i, top, bot] of fx.swings) {
+  check(S.isSwing(reg, i, 1) === top && S.isSwing(reg, i, -1) === bot, `swing label at ${i}`);
+}
 check(S.versionAt([{ eff: 100 }, { eff: 400 }, { eff: 700 }], 450).eff === 400, "versionAt");
 check(S.versionAt([{ eff: 100 }], 50) === null, "versionAt before first");
 if (bad) { console.error(`${bad} mismatches`); process.exit(1); }

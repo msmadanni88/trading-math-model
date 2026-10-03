@@ -18,10 +18,17 @@ Then check, in this order:
    than about 1% worse than its best agent.
 6. **Direction.** Report it honestly (history: 50%). Do not tune for it; a
    sudden jump is a look-ahead bug until proven otherwise.
-7. **Learning.** `retrain_log`: refits happening, parameters sane, how often
+7. **Reversal agent.** Hit rate of its calls on 7d / 30d against `chance` and
+   against `naive_rule` in `reports/latest.json` (it must beat both; beating
+   only chance means it has learned nothing beyond "a fresh high is often a
+   top"). Number of calls per day (budget is about 8% of minutes per side).
+8. **Fixed record.** Spot-check that rows of older days in `forecasts/` and
+   `reversals/` are byte-identical to last week's copy (git history of the
+   `state` branch): generated columns and calls must never change.
+9. **Learning.** `retrain_log`: refits happening, parameters sane, how often
    the tree challenger is promoted. Agent weights: has one collapsed or taken
    over. Goal-tuner multipliers stable.
-8. **Cost and size.** Duration of a run (about a minute), size of the `state`
+10. **Cost and size.** Duration of a run (about a minute), size of the `state`
    branch.
 
 Fix what is broken. A change to model logic needs: tests passing (including

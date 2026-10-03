@@ -61,6 +61,7 @@ minute, for free.
 | outcome heads | `student.py` | candles 2-5 minutes ahead, learned from realised candles |
 | live generator | `student.py`, `docs/student.js` | real-time modelling in the browser |
 | goal keeper | `goal.py`, `report.py` | measures the goal, raises off-track alerts |
+| reversal | `agents/reversal.py`, `student.py` | calls swing highs / lows up to 5 minutes ahead; own models (online logit + trees, mixed by Hedge), own goal, own immutable record of calls |
 
 ### Planned (extension points already in place)
 
@@ -86,6 +87,15 @@ Three kinds, three contracts:
 - **supervisor** → reads the reports / per-agent losses and acts on other
   agents (reweight, reset, retrain). Fast supervisors are code; slow ones can
   be an LLM session reading `reports/latest.json`.
+
+### The fixed record
+
+`forecasts/` holds, for every minute, the candle generated one minute ahead and
+the one locked five minutes ahead (`g5_*`, opening offset `g5_o`);
+`reversals/` holds every reversal call. `run.py` never rewrites a stored
+generated candle (`PROTECTED` columns) and `store.merge_calls` never edits a
+stored call. The browser applies the same rule to what it has already shown
+(kept in local storage), so a visitor never sees a past forecast move.
 
 ### Rules every agent must obey
 
