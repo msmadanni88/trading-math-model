@@ -4,7 +4,9 @@
 // an exchange REST API with a random-walk market, and the trade stream. /truth returns the
 // candles exactly as this "exchange" defines them, so a test can compare what the page drew.
 // /ctl?drop=N drops the next N trades from the stream, ?partial=0 hides the candle in
-// progress from the REST API, ?lag=S publishes a closed minute S seconds late.
+// progress from the REST API, ?lag=S publishes a closed minute S seconds late. It also plays
+// the other venue (/api/v5/market/...): ?xdown=1 takes it down, ?xlag=S makes it mark a
+// closed minute complete S seconds late.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -26,7 +28,9 @@ if (latest.path) latest.path.origin += D;
 params.versions.forEach((v) => (v.eff += D));
 if (head) { head.generated = latest.generated; head.last_ts = latest.last_ts; head.eff = params.versions.map((v) => v.eff); }
 
-const ctl = { drop: 0, partial: 1, lag: 0 };
+const ctl = { drop: 0, partial: 1, lag: 0, xdown: 0, xlag: 0.4 };
+// the other venue: the same market a touch richer, wandering around it (one fixed value per minute and close)
+const xClose = (k) => Math.round(k[4] * (1.0003 + 0.0002 * Math.sin(k[0] / 600) + 0.00008 * Math.sin(k[0] * 1.7)) * 100) / 100;
 const candles = new Map(latest.candles.map((k) => [k[0], k.slice()]));
 let price = latest.candles[latest.candles.length - 1][4], tradeId = 1000;
 let seed = 12345; const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
@@ -51,6 +55,14 @@ http.createServer((req, res) => {
   if (u.pathname === "/live/params.json") return json(params);
   if (u.pathname === "/live/head.json" && head) return json(head);
   if (u.pathname.startsWith("/live/") && fs.existsSync(path.join(LIVE, path.basename(u.pathname)))) return json(read(path.basename(u.pathname)));
+  if (u.pathname.startsWith("/api/v5/market/")) {            // the other venue: newest first, the last field says "complete"
+    if (ctl.xdown) { res.statusCode = 503; return res.end("down"); }
+    const t = now(), cur = Math.floor(t / GRAN) * GRAN, after = +(u.searchParams.get("after") || 1e18);
+    const lim = Math.min(+(u.searchParams.get("limit") || 100), u.pathname.endsWith("history-candles") ? 100 : 300);
+    const keys = [...candles.keys()].filter((k) => k * 1000 < after && k <= cur).sort((a, b) => b - a).slice(0, lim);
+    return json({ code: "0", msg: "", data: keys.map((k) => { const c = candles.get(k), x = String(xClose(c));
+      return [String(k * 1000), x, x, x, x, "1", "1", "1", k === cur || (k === cur - GRAN && t - cur < ctl.xlag) ? "0" : "1"]; }) });
+  }
   if (u.pathname.endsWith("/candles")) {
     const t = now(), cur = Math.floor(t / GRAN) * GRAN;
     let keys = [...candles.keys()].sort((a, b) => b - a);

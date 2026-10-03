@@ -30,7 +30,7 @@ from .features import compute_features, feature_names, regularize
 # outcome existed - generated candles, the frozen chain, per-candle results of
 # the chain, reversal probabilities. Once written, a value is never rewritten.
 PROTECTED = re.compile(r"^(g\d*_|c\d+_in$|s\d+$|d\d+$|lk_|r\d+_)")
-DECISIONS = ("g_call",)       # columns that qualify the stored prediction of the same row
+DECISIONS = ("g_call", "g_x")  # columns that qualify the stored prediction of the same row
 
 
 def load_engine(path):
@@ -62,10 +62,11 @@ def run_engine(eng, df, start_idx, progress=False):
     sub = df.iloc[start_idx:]
     ts = sub["ts"].to_numpy(np.int64)
     o, h, l, c, v = (sub[k].to_numpy(float) for k in ("open", "high", "low", "close", "volume"))
+    xc = sub["xclose"].to_numpy(float) if "xclose" in sub else np.full(len(sub), np.nan)
     rows = []
     t0 = time.time()
     for i in range(len(sub)):
-        row = eng.process(ts[i], o[i], h[i], l[i], c[i], v[i], F[i], gk[i])
+        row = eng.process(ts[i], o[i], h[i], l[i], c[i], v[i], F[i], gk[i], xc[i])
         if row is not None:
             rows.append(row)
         if progress and (i + 1) % 10000 == 0:
@@ -96,6 +97,22 @@ def step(state_dir, cache_dir, offline=False, now=None):
     if not rows:
         raise RuntimeError(f"no candles available ({fetch_err})")
     df = regularize(rows)
+
+    # the same asset on the other venue (cross-venue agent). Never fatal: without
+    # it the model falls back to what it can say from this market alone.
+    xrows, x_err = store.read_candles(state_dir, max(start_ts, horizon), kind="xcandles"), None
+    if not offline:
+        try:
+            for attempt in range(2):            # its last minute may be a moment behind ours: look once more
+                xrows, xnew = data.update_x(xrows, max(start_ts, horizon), now=now)
+                if xnew:
+                    store.write_candles(state_dir, xrows, xnew[0][0], kind="xcandles")
+                if xrows and xrows[-1][0] >= rows[-1][0]:
+                    break
+                time.sleep(2.0)
+        except Exception as e:
+            x_err = f"{type(e).__name__}: {e}"
+    df["xclose"] = df["ts"].map({r[0]: r[4] for r in xrows}).astype(float)
 
     eng, why = load_engine(eng_path)
     replay = False
@@ -148,8 +165,8 @@ def step(state_dir, cache_dir, offline=False, now=None):
             if len(keep):
                 fc_new = fc_new.set_index("ts")
                 both = keep.index.intersection(fc_new.index)
-                # a decision about a prediction (is this colour call a confident one?)
-                # belongs to that prediction: it is not added to a stored prediction
+                # a decision about a prediction (is this colour call a confident one? was the
+                # other venue read for it?) belongs to that prediction: it is not added to a stored prediction
                 # that this engine would have made differently
                 other = pd.Series(False, index=both)
                 if "g_p" in keep.columns and "g_p" in fc_new.columns:
@@ -183,7 +200,8 @@ def step(state_dir, cache_dir, offline=False, now=None):
 
     fc = store.read_forecasts(state_dir, int(now) - 31 * 86400)
     status.update(n_new_candles=len(new), n_processed=int(len(df) - start_idx), replay=replay,
-                  replay_reason=why if replay else None, fetch_error=fetch_err,
+                  replay_reason=why if replay else None, fetch_error=fetch_err, x_fetch_error=x_err,
+                  x_last_ts=int(xrows[-1][0]) if xrows else None,
                   last_candle_ts=int(df["ts"].iloc[-1]), duration_s=round(time.time() - t_start, 1))
     if fetch_err:
         status["error"] = "candle download failed: " + fetch_err

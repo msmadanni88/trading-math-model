@@ -11,6 +11,7 @@
   const DATA = qs.get("data") || `https://raw.githubusercontent.com/${owner}/${repo}/state/live`;
   const API = qs.get("api") || "https://api.exchange.coinbase.com";
   const WSS = qs.get("ws") || "wss://ws-feed.exchange.coinbase.com";
+  const XAPI = qs.get("x") || "https://www.okx.com";          // the other venue (cross-venue agent)
   const KEEP = 900;                       // candles kept on the chart
   const $ = (id) => document.getElementById(id);
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -41,6 +42,11 @@
   let versions = [];
   let models = {};                        // swing size -> {model id -> packed trees}
   let cloud = null, cloudOld = false;
+  // The other venue: complete one-minute candles of the same asset there (ts -> close).
+  // xinfo: what the cloud says to read ({inst, ...}); xTried: a first attempt has finished;
+  // xOkAt: when it last answered. Without it the page predicts from this market alone.
+  const XC = new Map();
+  let xinfo = null, xTried = false, xOkAt = 0;
   let lastTickAt = 0, wsOpen = false, dirty = false, syncing = false;
   let skew = 0;                           // exchange clock minus this device's clock, seconds
   const skews = [];
@@ -157,8 +163,18 @@
     if (!ver || i < S.WIN) return null;
     const win = closed.slice(i - S.WIN, i + 1);
     const { f, sig } = S.compact(win, nxt);
-    return { ver, win, f, sig, path: S.generatePath(ver, f, sig) };
+    const x = xinfo && ver.HX ? xView(i, sig) : null;
+    return { ver, win, f, sig, x, path: S.generatePath(ver, f, sig, x) };
   }
+  function xView(i, sig) {                 // what the other venue said when closed[i] closed, or null
+    if (i < S.X_WIN - 1) return null;
+    const w = closed.slice(i - S.X_WIN + 1, i + 1);
+    return S.xFeatures(w.map((k) => k[4]), w.map((k) => (XC.has(k[0]) ? XC.get(k[0]) : null)), sig);
+  }
+  // Is the other venue's candle for the minute that started at `t` still on its way? Then the
+  // prediction made from that minute waits a moment for it (a few seconds at most).
+  const xAlive = () => !xTried || Date.now() / 1000 - xOkAt < 300;
+  const xWaiting = (t) => !!xinfo && !XC.has(t) && (!xTried || (xAlive() && now() - (t + GRAN) < 3.5));
   // Writes the record for every closed candle this page has not handled yet.
   // Same functions and same published parameters as the cloud, so the cloud
   // later stores the same numbers. Nothing already in the record is touched.
@@ -168,11 +184,12 @@
     for (let i = S.WIN; i < closed.length; i++) {
       const t = closed[i][0], nxt = t + GRAN;
       if (t <= doneTs) continue;
+      if (xWaiting(t) && (S.versionAt(versions, nxt) || {}).HX) break;        // its view of this minute is a moment away
       const m = pathAt(i);
       if (!m) continue;
       const { ver, win, f, sig, path } = m, made = Math.round(now());
       const p0 = path[0];
-      setOnce(G, nxt, { b: p0.b, u: p0.u, d: p0.d, p: p0.p, q05: p0.q05, q95: p0.q95, c: p0.call, made });
+      setOnce(G, nxt, { b: p0.b, u: p0.u, d: p0.d, p: p0.p, q05: p0.q05, q95: p0.q95, c: p0.call, x: p0.x, made });
       if (path.length === HZ && nxt % (HZ * GRAN) === 0) {          // a quarter hour starts: freeze the chain
         path.forEach((q, j) => setOnce(K, nxt + j * GRAN, { h: j + 1, o: q.o, b: q.b, u: q.u, d: q.d, made }));
       }
@@ -251,7 +268,7 @@
   let liveCache = null;
   function liveChain() {
     if (!formingOk()) return [];
-    const i = closed.length - 1, key = closed[i][0] + "|" + versions.length + "|" + (versions.length ? versions[versions.length - 1].eff : 0);
+    const i = closed.length - 1, key = closed[i][0] + "|" + versions.length + "|" + (versions.length ? versions[versions.length - 1].eff : 0) + "|" + XC.has(closed[i][0]);
     if (!liveCache || liveCache.key !== key) liveCache = { key, m: pathAt(i) };
     const m = liveCache.m, first = genBar(forming[0]);
     if (!m || !first) return [];
@@ -429,7 +446,8 @@
     if (!formingOk()) { box.append(el("p", "muted", syncing || lastTickAt ? "syncing with the exchange…" : "waiting for the market feed…")); return; }
     const b = genBar(forming[0]);
     if (!b) {
-      box.append(el("p", "muted", versions.length ? "collecting candles before the first prediction…" : "waiting for the model…"));
+      const wait = versions.length && xinfo && closed.length && xWaiting(lastClosed()[0]);
+      box.append(el("p", "muted", wait ? "reading the other venue…" : versions.length ? "collecting candles before the first prediction…" : "waiting for the model…"));
       return;
     }
     const up = b.g.b >= 0;
@@ -441,6 +459,11 @@
     kv(dl, "predicted close", `${fmtP(b.c)}  (${(b.g.b * 1e4).toFixed(1)} bp)`);
     kv(dl, "predicted high / low", `${fmtP(b.h)} / ${fmtP(b.l)}`);
     kv(dl, "90% range for the close", `${fmtP(b.q05)} – ${fmtP(b.q95)}`);
+    if (xinfo) {
+      const i = closed.length - 1, v = i >= S.WIN ? xView(i, S.compact(closed.slice(i - S.WIN, i + 1), forming[0]).sig) : null;
+      kv(dl, "other venue", !b.g.x ? "not read for this candle"
+        : v ? `${v[1] >= 0 ? "ahead" : "behind"} by ${Math.abs(v[1]).toFixed(1)} typical moves` : "read");
+    }
     box.append(dir, dl);
     const s = scoreBar(b, forming);
     const ls = el("div", "livescore");
@@ -604,6 +627,12 @@
       const i = cloud.hmm.state_prob.indexOf(Math.max(...cloud.hmm.state_prob));
       kv(rg, "volatility state", ["calm", "normal", "turbulent"][i] + ` (${(cloud.hmm.state_prob[i] * 100).toFixed(0)}%)`);
     }
+    const vn = cloud.venue;
+    if (vn && vn.head) {
+      const cx = vn.colour_30d || {};
+      kv(rg, "cross-venue agent", `${vn.source} ${vn.inst}` + (vn.used_24h != null ? ` · read for ${pc1(vn.used_24h)} of the last 24 h` : ""));
+      if (cx.with) kv(rg, "colour right, 30 days: with it / without", `${pc1(cx.with.rate)} / ${cx.without ? pc1(cx.without.rate) : "–"}`);
+    }
     const last = (cloud.retrain_log || []).slice(-1)[0];
     if (last) kv(rg, "last self-retrain", fmtT(last.ts) + ", " + new Date(last.ts * 1000).toLocaleDateString());
     const al = $("alerts");
@@ -741,6 +770,13 @@
     c.lastChild.textContent = age == null ? "model cloud: no data yet"
       : cloudOld ? "model cloud: moving to the new models…"
       : age < 90 ? `model cloud: learned ${Math.max(0, Math.round(age))} min ago` : `model cloud: learned ${(age / 60).toFixed(1)} h ago`;
+    const xf = $("feed-x");
+    xf.hidden = !xinfo;
+    if (xinfo) {
+      const okx = t - xOkAt < 150;
+      xf.className = "feed " + (okx ? "ok" : xTried ? "bad" : "warn");
+      xf.lastChild.textContent = okx ? "other venue: live" : xTried ? "other venue: not reachable" : "other venue: connecting…";
+    }
     if (formingOk()) {
       const left = Math.max(0, forming[0] + GRAN - now());
       $("clock").textContent = `closes in ${Math.ceil(left)}s`;
@@ -784,6 +820,7 @@
     rebuild();
     advance();
     renderAll();
+    xPoll(bucket - GRAN);                   // the other venue's candle of the minute that closed, then the prediction
     setTimeout(() => syncExchange().catch(() => {}), 4000);       // then take the exchange's own candle for the minute that closed
   }
   function onTrade(price, size, t, isTrade) {
@@ -840,6 +877,48 @@
     if (!r.ok) throw new Error(url + " -> " + r.status);
     return r.json();
   }
+  // The other venue's candles. Only candles it has marked complete are taken. Failures are
+  // silent: the page then predicts from this market alone and says so.
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function xGet(path) {
+    const r = await fetch(XAPI + path, { cache: "no-store" });
+    if (!r.ok) throw new Error("other venue -> " + r.status);
+    const j = await r.json();
+    if (String(j.code) !== "0") throw new Error("other venue: " + j.msg);
+    for (const k of j.data || []) if (String(k[k.length - 1]) === "1") XC.set(Math.floor(+k[0] / 1000), +k[4]);
+    xOkAt = Date.now() / 1000;
+    return j.data || [];
+  }
+  async function xSync(fromTs) {             // the latest candles, and further back to `fromTs` if asked
+    if (!xinfo) return;
+    try {
+      await xGet(`/api/v5/market/candles?instId=${xinfo.inst}&bar=1m&limit=${fromTs ? 300 : 5}`);
+      let oldest = Math.min(...XC.keys());
+      for (let page = 0; page < 14 && fromTs && oldest > fromTs; page++) {
+        const rows = await xGet(`/api/v5/market/history-candles?instId=${xinfo.inst}&bar=1m&after=${oldest * 1000}&limit=100`);
+        if (!rows.length) break;
+        oldest = Math.min(oldest - GRAN, ...rows.map((k) => Math.floor(+k[0] / 1000)));
+      }
+      const cut = now() - 1600 * GRAN;
+      for (const k of XC.keys()) if (k < cut) XC.delete(k);
+    } catch (e) { /* carry on without it */ } finally { xTried = true; }
+  }
+  // A minute just closed: ask for the other venue's candle of that minute until it is there
+  // (it is marked complete a moment after the minute ends), then make the prediction.
+  let xPollRun = 0;
+  async function xPoll(t) {
+    if (!xinfo) return;
+    const run = ++xPollRun;
+    for (const wait of [250, 550, 800, 900, 1000]) {
+      await sleep(wait);
+      if (run !== xPollRun) return;
+      await xSync(0);
+      if (XC.has(t)) break;
+    }
+    if (run !== xPollRun) return;
+    advance();
+    renderAll();
+  }
   // The exchange's own candles: fill everything since the cloud's last run,
   // replace anything this page built from the trade stream, and (re)start the
   // candle in progress.
@@ -871,6 +950,7 @@
         take(rows);
         oldest = start;
       }
+      if (xinfo && xTried) await Promise.race([xSync(0), sleep(2500)]);
       if (run !== syncRun) return;                          // a newer sync is on its way
       lastTickAt = Date.now() / 1000;
       rebuild();
@@ -941,8 +1021,9 @@
       HZ = latest.horizon || HZ;
       if (params.rev) rev = { ks: params.rev.ks, k: params.rev.k, hs: params.rev.hs };
       versions = (params.versions || []).filter((v) => v.fmt === S.FORMAT);
+      xinfo = params.x && versions.some((v) => v.HX) ? params.x : null;
       await Promise.all(activeKs().map(ensureModels));
-      for (const g of latest.gen || []) setOnce(G, g[0], { b: g[1], u: g[2], d: g[3], p: g[4], q05: g[5], q95: g[8], c: g[9] == null ? 0 : g[9] });
+      for (const g of latest.gen || []) setOnce(G, g[0], { b: g[1], u: g[2], d: g[3], p: g[4], q05: g[5], q95: g[8], c: g[9] == null ? 0 : g[9], x: g[10] == null ? 0 : g[10] });
       for (const g of latest.locked || []) setOnce(K, g[0], { h: g[1], o: g[2], b: g[3], u: g[4], d: g[5] });
       for (const [kk, r] of Object.entries(latest.rev || {})) {
         const k = +kk;
@@ -955,6 +1036,9 @@
         }
       }
       doneTs = Math.max(doneTs, latest.last_ts || 0);
+      // the other venue's candles since the cloud's last run (and an hour before, for its view of them)
+      if (xinfo && (first || !xTried)) await Promise.race([xSync(Math.max((latest.last_ts || 0) - 70 * GRAN, now() - 1300 * GRAN)), sleep(9000)]);
+      xTried = true;
       if (first) buildPanel();
     }
     headSeen = key;
@@ -1006,6 +1090,7 @@
     const mUp = b.g.b >= 0, rUp = k[4] > b.o, flat = k[4] === b.o;
     kv(dl, "colour: model → market", `${mUp ? "green" : "red"} → ${flat ? "unchanged" : rUp ? "green" : "red"}  ${flat ? "" : mUp === rUp ? "✓ right" : "✗ wrong"}`);
     kv(dl, "model's P(up)", (b.g.p * 100).toFixed(1) + "%" + (b.g.c >= 2 ? "  · strong call" : b.g.c ? "  · confident call" : "  · no confident call"));
+    if (xinfo || b.g.x) kv(dl, "other venue's price read for this prediction", b.g.x ? "yes" : "no — from this market alone");
     kv(dl, "real  O H L C", `${fmtP(k[1])}  ${fmtP(k[2])}  ${fmtP(k[3])}  ${fmtP(k[4])}`);
     kv(dl, "predicted  O H L C", `${fmtP(b.o)}  ${fmtP(b.h)}  ${fmtP(b.l)}  ${fmtP(b.c)}`);
     kv(dl, "90% range for the close", `${fmtP(b.q05)} – ${fmtP(b.q95)}` + (k !== forming ? (k[4] >= b.q05 && k[4] <= b.q95 ? "  ✓ held" : "  ✗ missed") : ""));
@@ -1091,6 +1176,7 @@
   })();
 
   // for the automated checks of this page (tests/site.mjs): a read-only view of what is drawn
+  window.__x = () => ({ info: xinfo, n: XC.size, okAt: xOkAt, tried: xTried });
   window.__site = {
     state: () => ({ closed, forming, trusted, G, K, R, PR, HZ, rev, versions, provisional, panel, chain: liveChain(), doneTs }),
     genBar, lockBar, shownCalls, callOutcome, now,

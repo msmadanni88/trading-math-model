@@ -8,13 +8,15 @@
 //   - the details card opens from a match bar and from nothing else
 //   - a colour call is marked confident exactly when the published threshold says so
 //   - the prediction stays in view when the width of the page changes
+//   - the other venue is read for every prediction while it answers; when it does not, the page
+//     keeps predicting from this market alone, says so, and picks it up again when it is back
 // including after a reload, a gap in the trade stream, a frozen tab and a dropped connection.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright-core");
 const base = process.argv[2] || "http://127.0.0.1:8765", shots = process.argv[3] || null;
 const port = +new URL(base).port;
-const url = `${base}/?data=${base}/live&api=${base}&ws=ws://127.0.0.1:${port + 1}`;
+const url = `${base}/?data=${base}/live&api=${base}&x=${base}&ws=ws://127.0.0.1:${port + 1}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0, passed = 0;
 const ok = (cond, msg) => { if (cond) passed++; else { failed++; console.error("FAIL", msg); } };
@@ -140,6 +142,11 @@ ok(cc.ci >= 10, `A: win rates carry their interval (${cc.ci})`);
 ok(cc.sliceShown && cc.slices === 7, `A: the regime table has ${cc.slices} rows`);
 ok(/confident call|strong call/.test(cc.badge || ""), `A: the next-candle card says whether the call is confident (${cc.badge})`);
 ok(/confident and strong calls/.test(cc.note), `A: the chart note counts the confident calls (${cc.note.slice(0, 160)})`);
+// the cross-venue agent: the other venue's candles are loaded and its view is used
+const xv = await page.evaluate(() => ({ x: window.__x(), feed: document.getElementById("feed-x").innerText, hidden: document.getElementById("feed-x").hidden,
+  next: document.getElementById("next").innerText, team: document.getElementById("regime").innerText }));
+ok(xv.x.info && xv.x.n > 250 && !xv.hidden && /live/.test(xv.feed), `A: the other venue is connected (${xv.x.n} candles, "${xv.feed}")`);
+ok(/other venue/.test(xv.next) && /cross-venue agent/.test(xv.team), "A: the cards show the other venue");
 if (shots) await page.screenshot({ path: shots + "/site-desktop.png", fullPage: true });
 
 // ---- B. the details card opens from a match bar only
@@ -167,6 +174,7 @@ d = await candlesMatch(page, "C after a minute");
 shape(d, "C after a minute");
 recordKept(before, d, "C after a minute");
 ok(d.forming[0] > before.forming[0], "C: a new minute started");
+ok(d.G[d.forming[0]] && d.G[d.forming[0]].x === 1, `C: the prediction of the new minute read the other venue (${JSON.stringify(d.G[d.forming[0]])})`);
 await untilSecond(8);
 d = await candlesMatch(page, "C after two minutes");
 recordKept(before, d, "C after two minutes");
@@ -212,6 +220,22 @@ await sleep(14000);
 d = await candlesMatch(page, "G after a dropped connection");
 shape(d, "G after a dropped connection");
 recordKept(e, d, "G after a dropped connection");
+
+// ---- K. the other venue goes away and comes back
+await untilSecond(20); await ctl("xdown=1");
+await untilSecond(10); await untilSecond(10);
+let k1 = await candlesMatch(page, "K the other venue is down");
+shape(k1, "K the other venue is down");
+recordKept(d, k1, "K the other venue is down");
+ok(k1.G[k1.forming[0]] && k1.G[k1.forming[0]].x === 0, `K: while it is down the prediction is made from this market alone (${JSON.stringify(k1.G[k1.forming[0]])})`);
+await ctl("xdown=0&xlag=1.5");               // back, and slow to mark its candle complete: the page waits for it
+await untilSecond(12); await untilSecond(12);
+let k2 = await candlesMatch(page, "K the other venue is back");
+recordKept(k1, k2, "K the other venue is back");
+ok(k2.G[k2.forming[0]] && k2.G[k2.forming[0]].x === 1, `K: back again, the prediction reads it (${JSON.stringify(k2.G[k2.forming[0]])})`);
+ok(/live/.test(await page.locator("#feed-x").innerText()), "K: the feed light is green again");
+await ctl("xlag=0.4");
+d = k2;
 
 // ---- H. the control panel
 const callsOwn = d.calls;

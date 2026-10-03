@@ -4,6 +4,7 @@ Plain-text CSV, one file per UTC day: a run appends a few lines to one small
 file, so git stores only tiny deltas.
 
   candles/YYYY-MM-DD.csv    forecasts/YYYY-MM-DD.csv    calls/YYYY-MM-DD.csv
+  xcandles/YYYY-MM-DD.csv                 candles of the same asset on the other venue
   ledger/winrate.csv                      win rate per day and layer (archive)
   live/head.json latest.json params.json rev_k<K>.json      what the site reads
   reports/latest.md|json  status.json
@@ -42,9 +43,9 @@ def _files(sd, kind, since_ts):
     return fs
 
 
-def read_candles(sd, since_ts=None):
+def read_candles(sd, since_ts=None, kind="candles"):
     rows = []
-    for p in _files(sd, "candles", since_ts):
+    for p in _files(sd, kind, since_ts):
         with open(p, newline="") as f:
             rd = csv.reader(f)
             next(rd, None)
@@ -53,7 +54,7 @@ def read_candles(sd, since_ts=None):
     return rows
 
 
-def write_candles(sd, rows, since_ts=None):
+def write_candles(sd, rows, since_ts=None, kind="candles"):
     """Write the daily files that contain candles with ts >= since_ts (all
     days present in `rows` if since_ts is None)."""
     by = {}
@@ -66,7 +67,7 @@ def write_candles(sd, rows, since_ts=None):
             wr.writerow(CANDLE_COLS)
             for r in by[m]:
                 wr.writerow([int(r[0])] + [repr(float(x)) for x in r[1:6]])
-        _atomic_text(os.path.join(sd, "candles", m + ".csv"), w)
+        _atomic_text(os.path.join(sd, kind, m + ".csv"), w)
 
 
 def read_forecasts(sd, since_ts=None):
@@ -175,7 +176,8 @@ def read_json(path):
 
 def prune(sd, now, keep_forecast_days=180, keep_candle_days=400):
     """Old daily files are dropped so the state branch stays small."""
-    for kind, days in (("forecasts", keep_forecast_days), ("calls", keep_forecast_days), ("candles", keep_candle_days)):
+    for kind, days in (("forecasts", keep_forecast_days), ("calls", keep_forecast_days), ("candles", keep_candle_days),
+                       ("xcandles", keep_candle_days)):
         cut = day(now - days * 86400)
         for p in glob.glob(os.path.join(sd, kind, "*.csv")):
             if os.path.basename(p)[:10] < cut:

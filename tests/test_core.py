@@ -161,7 +161,8 @@ def _version(rng, fmt=student.FORMAT):
     W[4:, 0] = [-1.6, -0.67, 0.67, 1.6]                # ordered quantiles, like a fitted model has
     H = rng.normal(size=(HORIZON, len(student.H_OUTPUTS), len(student.FEATURES))) * 0.1
     ver = {"fmt": fmt, "W": W, "H": H, "scale": [[1.0, 1.0]] + [[1.0 + 0.02 * h, 1.2 + 0.03 * h] for h in range(1, HORIZON)],
-           "cone": [1.0] + [float(np.sqrt(h)) for h in range(2, HORIZON + 1)], "ct": [0.04, 0.09]}
+           "cone": [1.0] + [float(np.sqrt(h)) for h in range(2, HORIZON + 1)], "ct": [0.04, 0.09],
+           "HX": rng.normal(size=len(student.FEATURES) + len(student.X_FEATURES)) * 0.08}
     return W, H, ver
 
 
@@ -213,6 +214,15 @@ def test_chain_of_generated_candles_is_connected_and_stays_in_its_own_range():
         calls.append(path[0]["call"])
         assert student.generate_path(dict(ver, ct=None), f, sig)[0]["call"] == 0     # no lines published yet: no calls
     assert set(calls) == {0, 1, 2}                       # every level occurred
+    # with the other venue's view the colour of candle 1 comes from the head that reads it; nothing else changes
+    xv = np.array([1.5, -0.7, 2.0, 0.3])
+    a, b = student.generate_path(ver, f, sig), student.generate_path(ver, f, sig, xv)
+    assert a[0]["x"] == 0 and b[0]["x"] == 1 and all("x" not in g for g in b[1:])
+    px = min(max(0.5 + 0.5 * float(ver["HX"] @ np.r_[f, xv]), 0.02), 0.98)
+    assert abs(b[0]["p"] - px) < 1e-12 and (b[0]["b"] > 0) == (px >= 0.5) and abs(b[0]["b"]) == abs(a[0]["b"])
+    assert (b[0]["u"] + max(b[0]["b"], 0), b[0]["q05"]) == (a[0]["u"] + max(a[0]["b"], 0), a[0]["q05"])   # same reach, same range
+    assert [g["p"] for g in b[1:]] == [g["p"] for g in a[1:]]
+    assert student.generate_path(dict(ver, HX=None), f, sig, xv)[0]["x"] == 0                              # no head published: not used
     assert flips > 20                                    # the rule was actually exercised
     # an old-format version still gives the next candle, and only that
     W, H, ver = _version(rng, fmt=None)
@@ -320,6 +330,89 @@ def test_store_roundtrip(tmp_path):
     assert back == [[int(r[0])] + [float(x) for x in r[1:]] for r in rows]
     assert len(os.listdir(tmp_path / "candles")) >= 2
     assert store.read_candles(str(tmp_path), rows[-1][0])[-1] == back[-1]
+    # the other venue's candles live next to them, in their own folder
+    store.write_candles(str(tmp_path), rows[:50], kind="xcandles")
+    assert store.read_candles(str(tmp_path), kind="xcandles") == back[:50] and store.read_candles(str(tmp_path)) == back
+
+
+def test_cross_venue_view():
+    """x_features: units of this market's typical move, only the window given
+    matters, and it says "no view" instead of guessing when the other venue is
+    missing for the minute that just closed or for most of the window."""
+    from probcast.config import X_MIN, X_WIN
+    rng = np.random.default_rng(3)
+    c = 2000 * np.exp(np.cumsum(rng.normal(0, 5e-4, 300)))
+    g = 2e-4 + np.cumsum(rng.normal(0, 3e-5, 300))                  # the other venue trades a little richer, drifting
+    x = c * np.exp(g)
+    sig = 5e-4
+    v = student.x_features(c, x, sig)
+    w = g[-X_WIN:]
+    want = [(w[-1] - np.median(w)) / sig, (w[-1] - w[-2]) / sig, (w[-1] - w[-4]) / (sig * np.sqrt(3)), (w[-1] - w[-6]) / (sig * np.sqrt(5))]
+    assert np.allclose(v, want, atol=1e-9)
+    assert np.allclose(student.x_features(c[-X_WIN:], x[-X_WIN:], sig), v)          # nothing older than the window is read
+    assert np.allclose(student.x_features(c * 3, x * 3, sig), v)                    # price level does not matter
+    x2 = x.copy(); x2[-1] *= np.exp(10 * sig)                                       # the other venue jumps ahead: all four say so
+    v2 = student.x_features(c, x2, sig)
+    assert (v2 > v + 2).all() and v2.max() <= 8.0
+    miss = x.copy(); miss[-1] = np.nan
+    assert student.x_features(c, miss, sig) is None
+    few = np.full(300, np.nan); few[-(X_MIN - 1):] = x[-(X_MIN - 1):]
+    assert student.x_features(c, few, sig) is None
+    few[-X_MIN] = x[-X_MIN]
+    assert student.x_features(c, few, sig) is not None
+    hole = x.copy(); hole[-2] = np.nan; hole[-4] = np.nan                          # a hole: the latest candle before it is used
+    vh = student.x_features(c, hole, sig)
+    assert abs(vh[1] - (w[-1] - w[-3]) / sig) < 1e-9 and abs(vh[2] - (w[-1] - w[-5]) / (sig * np.sqrt(3))) < 1e-9
+    assert student.x_features(c[:30], x[:30], sig) is None and student.x_features(c, x, 0.0) is None
+
+
+def test_other_venue_download_keeps_only_complete_candles(monkeypatch):
+    from probcast import data
+    t0 = 1_790_000_040
+    def fake(url, retries=6):
+        q = dict(kv.split("=") for kv in url.split("?")[1].split("&"))
+        b, a = int(q["after"]) // 1000, int(q["before"]) // 1000 + 60
+        rows = [[str(t * 1000), "10", "12", "9", "11", "5", "0", "0", "1" if t < t0 + 250 * 60 else "0"] for t in range(b - 60, a - 60, -60)]
+        return {"code": "0", "data": rows}
+    monkeypatch.setattr(data, "_get", fake)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+    got = data.fetch_x(t0, t0 + 300 * 60, now=t0 + 400 * 60)
+    assert [r[0] for r in got] == list(range(t0, t0 + 250 * 60, 60)) and got[0][1:] == [10.0, 12.0, 9.0, 11.0, 5.0]
+    allr, new = data.update_x(got[:100], t0, now=t0 + 400 * 60)
+    assert len(allr) == 250 and [r[0] for r in new] == list(range(t0 + 100 * 60, t0 + 250 * 60, 60))
+
+
+def _leading_venue(rows, share=0.5, seed=0, noise=1e-5):
+    """The same asset on a venue that has already made part of this market's NEXT move."""
+    rng = np.random.default_rng(seed)
+    c = np.array([r[4] for r in rows])
+    nxt = np.r_[np.log(c[1:] / c[:-1]), 0.0]
+    x = c * np.exp(share * nxt + rng.normal(0, noise, len(c)) + 3e-4)
+    return [[r[0], xx, xx, xx, xx, 1.0] for r, xx in zip(rows, x)]
+
+
+def test_cross_venue_head_learns_a_lead_and_falls_back_without_it():
+    """If the other venue moves first, the head that reads it must find that
+    out by itself; minutes without the other venue's candle are predicted from
+    this market alone and marked as such."""
+    rows = synth(4300, seed=61)
+    df = regularize(rows)
+    x = np.array([r[4] for r in _leading_venue(rows, seed=2)])
+    x[3900:3960] = np.nan                               # the other venue is down for an hour
+    df["xclose"] = x
+    e = Engine()
+    fc = pd.DataFrame(run_engine(e, df, 0))
+    assert e.versions[-1]["HX"] is not None and len(e.versions[-1]["HX"]) == len(student.FEATURES) + len(student.X_FEATURES)
+    g = fc[fc["g_b"].notna() & (fc["y"] != 0)]
+    win = (g["g_b"] > 0) == (g["y"] > 0)
+    late = g["ts"] >= df["ts"].iloc[3000]
+    assert (g.loc[late, "g_x"] == 1).mean() > 0.9 and win[late & (g["g_x"] == 1)].mean() > 0.8
+    down = g[(g["ts"] > df["ts"].iloc[3901]) & (g["ts"] <= df["ts"].iloc[3960])]
+    assert len(down) > 40 and (down["g_x"] == 0).all()
+    # without any candle of the other venue the engine is exactly the engine it was
+    e2 = Engine()
+    fc2 = pd.DataFrame(run_engine(e2, regularize(rows), 0))
+    assert e2.versions[-1]["HX"] is None and (fc2["g_x"].dropna() == 0).all()
 
 
 def test_write_js_parity_fixture(tmp_path):
@@ -341,7 +434,10 @@ def test_write_js_parity_fixture(tmp_path):
     swings = [[int(i), int(K), bool(hi[i] >= hi[i - K:i + K + 1].max()), bool(lo[i] <= lo[i - K:i + K + 1].min())]
               for i in (100, 257, 333, 480, 612) for K in REV_KS]
     cases = []
-    keys = ("p", "b", "u", "d", "o", "lo", "hi", "flip", "call")
+    xs = np.array([r[4] for r in _leading_venue(df[["ts", "open", "high", "low", "close", "volume"]].values.tolist(), seed=4, noise=2e-4)])
+    xs[rng.random(len(xs)) < 0.05] = np.nan                    # the other venue misses a candle now and then
+    xs[610:640] = np.nan
+    keys = ("p", "b", "u", "d", "o", "lo", "hi", "flip", "call", "x")
     for end in (300, 455, 640, len(df) - 1):
         nts = int(df["ts"].iloc[end]) + GRAN
         Cw = C[end - STUDENT_WIN:end + 1]
@@ -351,12 +447,22 @@ def test_write_js_parity_fixture(tmp_path):
             phis = [student.rev_features(Cw, f, sig, sd, K) for sd in (1, -1)]
             pr = student.tree_probs(model, student.rev_rows(phis[0], phis[1], REV_HS)).reshape(2, len(REV_HS))
             rev[str(K)] = {"phi": [x.tolist() for x in phis], "probs": pr.tolist()}
+        xs_end = xs.copy()
+        if end == 455:
+            xs_end[end] = 1.0003 * Cw[-1, 3]                   # make sure one case has the view ...
+        if end == 640:
+            xs_end[end] = np.nan                               # ... and one has not
+        xv = student.x_features(Cw[:, 3], xs_end[end - STUDENT_WIN:end + 1], sig)
         cases.append({"last_ts": int(df["ts"].iloc[end]), "f": f.tolist(), "sig": sig,
+                      "xclose": [None if v != v else float(v) for v in xs_end[end - STUDENT_WIN:end + 1]],
+                      "xf": None if xv is None else xv.tolist(),
+                      "path_x": [{k: g[k] for k in keys if k in g} for g in student.generate_path(ver, f, sig, xv)],
                       "gen": student.generate(W, f, sig),
                       "path": [{k: g[k] for k in keys if k in g} for g in student.generate_path(ver, f, sig)], "rev": rev})
     sc = goal.candle_score(0.0011, 0.0004, 0.0002, 0.0001, -0.0007, 0.0009, -0.0012)
     out = {"raw": raw, "n_regular": len(df), "W": W.tolist(), "cases": cases, "horizon": HORIZON,
-           "ver": {"fmt": ver["fmt"], "W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"], "ct": ver["ct"]},
+           "ver": {"fmt": ver["fmt"], "W": W.tolist(), "H": H.tolist(), "scale": ver["scale"], "cone": ver["cone"], "ct": ver["ct"],
+                   "HX": ver["HX"].tolist()},
            "conf": [[float(p), [float(ct), float(2 * ct)], int(student.call_level({"ct": [ct, 2 * ct]}, p))]
                     for ct in (0.02, 0.0317, 0.05)
                     for p in np.r_[np.linspace(0.38, 0.62, 97), 0.5 + ct, 0.5 - ct, 0.5 + ct - 4e-7, 0.5 - ct + 6e-7, 0.5 + 2 * ct, 0.5 - 2 * ct + 6e-7]],
@@ -398,7 +504,8 @@ def test_restoring_an_older_engine_gives_the_same_record(monkeypatch):
         v = eng.fit_student(-(-(now + 420) // 300) * 300, np.iinfo(np.int64).max)
         if v:                                          # exactly what report.publish writes to versions.json
             published.append(json.loads(json.dumps({"eff": v["eff"], "fmt": v["fmt"], "W": v["W"].tolist(), "H": v["H"].tolist(),
-                                                    "scale": v["scale"], "cone": v["cone"], "rm": v["rm"], "rt": v["rt"], "ct": v["ct"]})))
+                                                    "scale": v["scale"], "cone": v["cone"], "rm": v["rm"], "rt": v["rt"], "ct": v["ct"],
+                                                    "HX": None if v["HX"] is None else v["HX"].tolist()})))
     assert len(published) > 10
     snap.merge_versions(published[-14:])                # what versions.json on the state branch holds
     again = run_engine(snap, df, 3265)
@@ -476,9 +583,9 @@ def test_stored_calls_are_never_rewritten_and_record_columns_are_protected(tmp_p
     assert len(got) == 3 and got[0]["p"] == 0.4 and got[0]["level"] == 2000.0 and got[0]["hit"] == 1
     assert (got[1]["typ"], got[1]["p"]) == (1, 0.5) and got[2]["k"] == 8 and got[2]["hit"] != got[2]["hit"]
     from probcast.run import PROTECTED
-    cols = ["g_b", "g_u", "g_p", "g_95", "g_eff", "g_call", "g2_b", "g5_o", "c3_in", "c15_in", "s2", "s15", "d7", "lk_o", "lk_h", "r5_tn", "r13_bx",
+    cols = ["g_b", "g_u", "g_p", "g_95", "g_eff", "g_call", "g_x", "g2_b", "g5_o", "c3_in", "c15_in", "s2", "s15", "d7", "lk_o", "lk_h", "r5_tn", "r13_bx",
             "t_b", "y", "cal_50", "cp_prob", "loss_garch", "sigma", "p_up", "ts"]
-    assert [c for c in cols if PROTECTED.match(c)] == cols[:17]
+    assert [c for c in cols if PROTECTED.match(c)] == cols[:18]
 
 
 def test_ledger_keeps_days_that_are_two_days_old(tmp_path):
@@ -506,6 +613,8 @@ def test_full_run_writes_everything_and_a_rebuild_changes_nothing_already_stored
     rows = synth(5200, seed=51, t0=t0)
     sd, cd = str(tmp_path / "state"), str(tmp_path / "cache")
     store.write_candles(sd, rows[:5000])
+    xrows = _leading_venue(rows, share=0.1, seed=9, noise=1e-4)      # a modest lead, as in the real market
+    store.write_candles(sd, xrows[:5000], kind="xcandles")
     now1 = rows[4999][0] + 70
     status, rep = run.step(sd, cd, offline=True, now=now1)
     assert status["replay"] and status["error"] is None
@@ -522,7 +631,12 @@ def test_full_run_writes_everything_and_a_rebuild_changes_nothing_already_stored
     assert rep["ledger"] and "colour_next" in rep["ledger"] and "overall" in rep["ledger"]
     # the colour caller has picked its line; the decision is stored with every generated candle and published
     assert len(rep["colour"]["threshold"]) == 2 and params["versions"][-1]["ct"] == rep["colour"]["threshold"]
-    assert latest["gen_cols"][-1] == "call" and all(len(g) == 10 for g in latest["gen"])
+    assert latest["gen_cols"][-2:] == ["call", "x"] and all(len(g) == 11 for g in latest["gen"])
+    # the cross-venue agent: its head is published, used, and the report says how much it adds
+    assert all(len(v["HX"]) == len(student.FEATURES) + len(student.X_FEATURES) for v in params["versions"]) and params["x"]["features"] == student.X_FEATURES
+    vn = rep["venue"]
+    assert vn["head"] and vn["seen_24h"] == 1.0 and vn["used_24h"] > 0.95 and vn["colour_30d"]["with"]["rate"] > 0.53
+    assert latest["venue"] == json.loads(json.dumps(store.clean(vn)))
     assert {"colour_confident", "colour_strong", "colour_clear"} <= set(rep["ledger"])
     cn, ov = rep["ledger"]["colour_next"], rep["ledger"]["overall"]
     assert cn["all"]["ci"][0] <= cn["all"]["rate"] <= cn["all"]["ci"][1]
@@ -540,12 +654,13 @@ def test_full_run_writes_everything_and_a_rebuild_changes_nothing_already_stored
     # A - the stored prediction is the one a rebuild makes again; B - it is a different one
     ix = fc1.index[fc1["g_call"].notna()]
     A, B = ix[-400:-200], ix[-200:]
-    fc1.loc[A.union(B), "g_call"] = np.nan
+    fc1.loc[A.union(B), ["g_call", "g_x"]] = np.nan
     fc1.loc[B, "g_p"] = (fc1.loc[B, "g_p"] + 0.011).round(6)
     store.write_forecasts(sd, fc1, int(fc1["ts"].iloc[0]))
     fc1 = store.read_forecasts(sd)
     # second run: new candles arrive and the saved engine is lost -> full rebuild
     store.write_candles(sd, rows)
+    store.write_candles(sd, xrows, kind="xcandles")
     os.remove(os.path.join(cd, "engine.pkl.gz"))
     status2, _ = run.step(sd, cd, offline=True, now=rows[-1][0] + 70)
     assert status2["replay"]
@@ -558,7 +673,8 @@ def test_full_run_writes_everything_and_a_rebuild_changes_nothing_already_stored
     was = ~np.isnan(x)
     assert np.array_equal(x[was], y[was])                      # nothing that was written has changed
     # the decision is filled in for the predictions it belongs to, and never attached to a different one
-    assert b["g_call"].loc[fc1.loc[A, "ts"]].notna().all() and b["g_call"].loc[fc1.loc[B, "ts"]].isna().all()
+    for col in ("g_call", "g_x"):
+        assert b[col].loc[fc1.loc[A, "ts"]].notna().all() and b[col].loc[fc1.loc[B, "ts"]].isna().all()
     calls2 = store.read_calls(sd).set_index(["for_ts", "k", "side", "typ"])
     for r in calls1.itertuples():
         q = calls2.loc[(r.for_ts, r.k, r.side, r.typ)]

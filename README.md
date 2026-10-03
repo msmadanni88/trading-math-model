@@ -20,7 +20,7 @@ from each of them in order, and publishes forecasts, reports and a fresh
 version of the live generator to the `state` branch. No server, no PC.
 
 - branch `main`: code (`probcast/`), tests, site (`docs/`)
-- branch `state`: `candles/`, `forecasts/`, `calls/` (one CSV per day),
+- branch `state`: `candles/`, `xcandles/` (the same asset on the other venue), `forecasts/`, `calls/` (one CSV per day),
   `ledger/winrate.csv`, `live/` (what the site reads), `reports/latest.md`,
   `status.json`
 - the fitted engine is kept in the Actions cache; if it is lost, or

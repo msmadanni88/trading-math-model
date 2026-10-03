@@ -26,6 +26,13 @@ for (const c of fx.cases) {
     for (const k of Object.keys(c.path[h])) check(close(q[k], c.path[h][k], 1e-12), `path[${h}].${k}: ${q[k]} vs ${c.path[h][k]}`);
     if (h > 0) check(q.o === path[h - 1].o + path[h - 1].b, `chain is connected at candle ${h + 1}`);
   });
+  // the cross-venue agent: its view of the other venue, and the chain when that view is used
+  const xf = S.xFeatures(win.map((k) => k[4]), c.xclose, sig);
+  check((xf === null) === (c.xf === null), `cross-venue view present: ${xf !== null} vs ${c.xf !== null}`);
+  if (xf && c.xf) xf.forEach((x, i) => check(close(x, c.xf[i], 1e-9), `cross-venue feature ${i}: ${x} vs ${c.xf[i]}`));
+  const px = S.generatePath(fx.ver, f, sig, xf);
+  px.forEach((q, h) => { for (const k of Object.keys(c.path_x[h])) check(close(q[k], c.path_x[h][k], 1e-12), `path with the other venue [${h}].${k}: ${q[k]} vs ${c.path_x[h][k]}`); });
+  check(px[0].x === (xf ? 1 : 0), "the head that reads the other venue is used exactly when its view exists");
   // an old-format version: only the next candle
   check(S.generatePath({ W: fx.W, H: fx.ver.H }, f, sig).length === 1, "old-format version gives one candle");
   // reversal agents: features of every swing size and the walk through the trees
@@ -49,5 +56,6 @@ for (const [i, K, top, bot] of fx.swings) {
 check(S.isSwing(reg, 2, 1, 5) === null && S.isSwing(reg, reg.length - 3, 1, 5) === null, "swing unknown near the edges");
 check(S.versionAt([{ eff: 100 }, { eff: 400 }, { eff: 700 }], 450).eff === 400, "versionAt");
 check(S.versionAt([{ eff: 100 }], 50) === null, "versionAt before first");
+check(fx.cases.some((c) => c.xf) && fx.cases.some((c) => !c.xf), "cases with and without the other venue");
 if (bad) { console.error(`${bad} mismatches of ${n} checks`); process.exit(1); }
 console.log(`parity ok: ${n} checks, ${fx.cases.length} cases, ${fx.cases[0].f.length} features, ${fx.model.roots.length} trees`);

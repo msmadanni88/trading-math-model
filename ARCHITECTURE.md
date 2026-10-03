@@ -1,7 +1,7 @@
 # Architecture
 
 ```
- exchange (Coinbase public feed)
+ exchange (Coinbase public feed)          other venue (OKX public feed): candles of the same asset
       │ candles (REST)                                  trades (websocket)
       ▼                                                       │
 ┌──────────────────────── cloud: GitHub Actions (scheduled) ──┼───────────────┐
@@ -60,6 +60,7 @@ for free.
 | orchestrator | `engine.py` | runs the loop, weights the forecast agents (Hedge), calibrates | coverage |
 | goal tuners | `engine.py` | turn forecasts into the candle that scores best, one per candle of the chain | candle score |
 | per-candle heads | `student.py` | colour and size of each of the next 15 candles, learned from realised candles | `colour_next`, `colour_path` |
+| cross-venue | `student.py` (`x_features`, head `HX`), `data.py` (`fetch_x`) | reads the same asset on another venue (the ETH perpetual on OKX), where the price is set a moment earlier: the gap to this market and how much further the other venue has moved. Decides the colour of candle 1 whenever its candle for the closed minute is there; otherwise the head for this market alone speaks, and the record says which (`g_x`) | `colour_next`, `colour_confident`, `colour_strong` |
 | colour caller | `agents/colour.py` | which colour calls the model stands behind: two lines on how far P(up) is from 50% (confident, strong), re-drawn to keep a fixed number of calls a day | `colour_confident`, `colour_strong` |
 | chain builder | `student.py`, `docs/student.js` | connects the 15 candles and keeps the chain inside the model's own range; frozen every quarter hour as the fixed history | `chain_end_side`, fixed-history match |
 | reversal K=3, 5, 8, 13 | `agents/reversal.py` | "the turn is in" and "a turn is coming" for swing points of that size; own tree model, own thresholds, own daily contest | `reversal_k<K>_now`, `_next` |
@@ -93,7 +94,8 @@ for free.
 
 | planned agent | kind | where it plugs in | layer it must lift |
 |---|---|---|---|
-| cross-market | signal | BTC lead-lag and the price gap to other venues at the minute close, on the blackboard (EXPERIMENTS.md, E14: next to be tested) | `colour_next`, `colour_confident` |
+| cross-venue in the full model | signal | the other venue's view appended to the full model's features, so the range forecast moves with it too (EXPERIMENTS.md, E15) | candle score |
+| second venue | signal | a second source for the cross-venue agent, so that one outage does not blind it | `colour_*` |
 | trade flow | signal | tested on 15 million trades (E13): no lift for colour or turning points, a small one for the high-low range; kept out until a retest on a longer history passes the gate | range overlap |
 | meta-learner | supervisor | learns from every agent's stored outputs which agent to trust in which regime | `colour_confident`, `overall` |
 | trend | signal + forecast | multi-timeframe trend state on the blackboard | `chain_end_side` |
@@ -130,7 +132,7 @@ model said (`r<K>_*`), and whether the colour call was a confident one
 rewrites a stored value of these (`PROTECTED` columns; an empty cell may be
 filled once) and `store.merge_calls` never edits a stored call. Columns of
 retired designs stay in the files (`g2_*`..`g5_*`, `reversals/`). A decision
-about a prediction (`g_call`) is only ever stored with the prediction it was
+about a prediction (`g_call`, `g_x`) is only ever stored with the prediction it was
 made about: a rebuild does not attach it to an older stored prediction that
 the rebuilt engine would have made differently. The browser
 applies the same rule to what it has already shown (kept in local storage),
@@ -157,6 +159,16 @@ running before the minute began, no trade number skipped). Anything else is
 replaced by the exchange's numbers before a prediction is made from it, and a
 stale price is never carried into a new candle. `tests/site.mjs` checks this
 through a reload, a gap in the stream, a frozen tab and a dropped connection.
+
+### The other venue
+
+The cloud downloads the other venue's complete one-minute candles next to this
+market's (`xcandles/` on the `state` branch; `probe.py` records once which
+venues answer from the cloud runner). The browser asks the same venue directly
+at every minute close and waits up to about three seconds for the candle of
+the minute that just closed; if it does not come, the prediction is made from
+this market alone and marked so. The cloud applies the same rule to its own
+record. Neither ever uses a candle the venue has not marked complete.
 
 ## Later: more timeframes and assets
 

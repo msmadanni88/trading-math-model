@@ -54,20 +54,22 @@ those days, so the numbers that count are the ones `since go-live`.
 - candles 2–15 of the chain, each judged from its own open: 35.5 falling to
   34.6; their 90% ranges hold 90% of the time
 
-**Colour, from candles alone, is barely forecastable - but the model knows
-when it has something to say.**
-- next candle, every minute: 51.0% with the per-candle direction head (the
-  earlier generation, which read the direction off the range forecast, had
-  50.0%)
-- its confident calls (about 144 a day): 52.6%; its strong calls (about 36 a
-  day): 54.9% - walking forward, and in both halves of the period
+**Colour is the hardest layer - the model knows when it has something to
+say, and the same asset on another venue tells it more.**
+- next candle, every minute: 52.3% when the cross-venue agent reads the ETH
+  perpetual on OKX; 51.0% from this market alone (the generation before the
+  per-candle direction head had 50.0%)
+- its confident calls (about 144 a day): 55.9% with the other venue, 52.6%
+  without; its strong calls (about 36 a day): 57.8% with, 54.9% without -
+  walking forward, and in both halves of the period
 - candles that really moved (more than half a typical move): 51.5%
 - candles 2–15: 50.1%
 - tree models did no better than the linear head, and trade flow (15 million
   trades, who hit the bid and the offer) added nothing to the colour of the
   next candle: what a minute's trades say about direction is already in its
-  candle (EXPERIMENTS.md, E13). The remaining route up is information that is
-  not in this market's own tape: other markets and venues that move first.
+  candle (EXPERIMENTS.md, E13). What did help is information that is not in
+  this market's own tape: the price of the same asset is set a moment earlier
+  on the perpetual venues (E14). BTC and SOL added nothing.
 
 **Turning points are forecastable.** Hit rate of the calls, at about 50 calls
 a day each; chance is how often the event happens anyway:
@@ -155,6 +157,7 @@ with what the market did, even after the market has gone somewhere else.
 | per-candle heads | colour and size of candles 1–15, refitted on what the market really printed | every cloud run |
 | distillation | the live generator in the browser is refitted to the full model | every cloud run |
 | swing labels | every confirmed swing point is a new training row for the reversal agents | every candle |
+| cross-venue head | the head that reads the other venue is refitted on what the market really printed, like the other heads | every cloud run |
 | colour caller | re-draws the two lines (confident, strong): the confidence that gave 144 and 36 calls a day over its last 7 days; measures whether confidence still pays | every 6 hours |
 | threshold tuning | each reversal agent re-picks the confidence that gave its best hit rate (beyond luck) over its last 7 days, among those keeping the minimum number of calls | every 6 hours |
 | refits | GARCH, HMM | every 12 hours |

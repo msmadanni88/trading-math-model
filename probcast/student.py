@@ -11,6 +11,7 @@ published BEFORE that minute started:
   scale   per-candle size multipliers learned from the goal score
   cone    per-candle width of the range for the close
   trees   the reversal agents' tree models, evaluated node by node
+  HX      direction head of the next candle that also reads the other venue (x_features)
 
 docs/student.js is a line-by-line mirror of this file; tests/parity.mjs proves
 both give the same numbers. The cloud's record is produced by these same
@@ -19,7 +20,7 @@ minute started, so what the site showed live is what gets stored.
 """
 import numpy as np
 
-from .config import HORIZON, STUDENT_WIN
+from .config import HORIZON, STUDENT_WIN, X_MIN, X_WIN
 
 LAM = 0.97
 FEATURES = ["bias", "z0", "z1", "z2", "m5", "m15", "m60", "lv", "rv5", "body", "wick_up", "wick_dn",
@@ -29,6 +30,7 @@ H_OUTPUTS = ["s_dir", "l_abs", "l_hi", "l_lo"]      # per candle 1..HORIZON
 REV_EXTRA = ["gap_k", "gap_2k", "gap_4k", "gap_30", "d_k", "d_30", "reject", "dh1", "dh2", "r1", "r2", "range",
              "leg", "leg_2k", "cpos", "cbody", "age", "run", "prev_reject", "prev_gap"]
 REV_FEATURES = FEATURES + REV_EXTRA
+X_FEATURES = ["x_gap", "x_lead1", "x_lead3", "x_lead5"]      # the cross-venue agent's view (see x_features)
 _FLIP = [1, 2, 3, 4, 5, 6, 9, 14]                   # compact features whose sign mirrors with the side
 OFF = 0.01
 OFF_H = 0.1
@@ -124,6 +126,41 @@ def generate(W, f, sig):
             "q05": n["q05"], "q25": n["q25"], "q75": n["q75"], "q95": n["q95"]}
 
 
+def x_features(close, xclose, sig):
+    """The cross-venue agent's view at a minute close.
+
+    close, xclose: closes of this market and of the same asset on the other
+    venue for the same minutes, oldest first, the last one being the candle
+    that just closed (NaN where the other venue has no candle). With
+    g = log(other venue / this market):
+
+      x_gap     g now against its own median of the last X_WIN minutes: is the
+                other venue richer or cheaper than usual right now
+      x_lead_k  g now minus g k minutes ago (k = 1, 3, 5): how much further the
+                other venue has moved than this market over those minutes
+
+    all in units of this market's typical one-minute move. Returns None when
+    the other venue has no candle for the minute that just closed, or too few
+    in the window - the caller then falls back to the head without them."""
+    c = np.asarray(close[-X_WIN:], float)
+    x = np.asarray(xclose[-X_WIN:], float)
+    if len(c) < X_WIN or len(x) < X_WIN or not sig > 0:
+        return None
+    ok = np.isfinite(x) & (x > 0)
+    if not ok[-1] or int(ok.sum()) < X_MIN:
+        return None
+    g = np.where(ok, np.log(np.where(ok, x, 1.0) / c), np.nan)
+    med = float(np.median(g[ok]))
+
+    def back(k):                                # g as it was known k minutes ago (the latest candle up to then)
+        i = len(g) - 1 - k
+        while i >= 0 and not ok[i]:
+            i -= 1
+        return g[i] if i >= 0 else g[-1]
+    out = [(g[-1] - med) / sig] + [(g[-1] - back(k)) / (sig * np.sqrt(k)) for k in (1, 3, 5)]
+    return np.array([_clip(float(v), 8.0) for v in out])
+
+
 def call_level(ver, p):
     """How far the model stands behind a colour call with P(up) = p:
     0 = close to a coin flip, 1 = confident, 2 = strong. `ct` holds the colour
@@ -137,11 +174,13 @@ def call_level(ver, p):
     return sum(1 for t in ct if c >= int(t * 1e6 + 0.5))
 
 
-def generate_path(ver, f, sig):
+def generate_path(ver, f, sig, x=None):
     """The next HORIZON candles, as one connected chain.
 
     Every candle h has
-      colour   from its own direction head H[h-1], fitted on real outcomes
+      colour   from its own direction head H[h-1], fitted on real outcomes;
+               candle 1, when the other venue's view `x` is available and a
+               head for it is published: from HX, which reads f and x
       size     candle 1: the full model's sizes; candles 2..: its own head
                times the multipliers the goal tuner learned for that candle
       o        where it opens = where the previous candle of the chain closed
@@ -158,12 +197,17 @@ def generate_path(ver, f, sig):
     H = ver.get("H")
     if H is None or ver.get("fmt") != FORMAT:
         g = generate(ver["W"], f, sig)
-        g.update(o=0.0, lo=g["q05"], hi=g["q95"], flip=0, call=0)
+        g.update(o=0.0, lo=g["q05"], hi=g["q95"], flip=0, call=0, x=0)
         return [g]
+    HX = ver.get("HX")
     iq = 0.5 * (n["q75"] - n["q25"])
     path, o = [], 0.0
     for h in range(1, len(H) + 1):
         d, a, e_up, e_dn, p = horizon_raw(np.asarray(H[h - 1]), f, sig)
+        used = 0
+        if h == 1 and x is not None and HX is not None:
+            p = min(max(0.5 + 0.5 * float(np.dot(np.asarray(HX), np.concatenate([f, x]))), 0.02), 0.98)
+            d, used = (1.0 if p >= 0.5 else -1.0), 1
         raw = (d, a, e_up, e_dn)                      # what the head said, before any multiplier
         if h == 1:
             a, e_up, e_dn, cone = n["a"], n["e_up"], n["e_dn"], 1.0
@@ -178,7 +222,7 @@ def generate_path(ver, f, sig):
         g = {"p": p, "b": float(b), "u": max(e_up - max(b, 0.0), 0.0), "d": max(e_dn - max(-b, 0.0), 0.0),
              "o": float(o), "lo": cone * n["q05"], "hi": cone * n["q95"], "flip": int(flip), "raw": raw}
         if h == 1:
-            g.update(q05=n["q05"], q25=n["q25"], q75=n["q75"], q95=n["q95"], call=call_level(ver, p))
+            g.update(q05=n["q05"], q25=n["q25"], q75=n["q75"], q95=n["q95"], call=call_level(ver, p), x=used)
         path.append(g)
         o += b
     return path

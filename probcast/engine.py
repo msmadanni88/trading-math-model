@@ -25,7 +25,7 @@ from .core import BOCPD, QUANTILES, pinball
 from .features import feature_names
 from .goal import candle_score
 
-STATE_VERSION = 6            # bump when a change makes old saved state invalid
+STATE_VERSION = 7            # bump when a change makes old saved state invalid
 EXTRA = ["cp_prob", "log_run", "bocpd_lsd"]
 BP = 1e4
 NQ = len(QUANTILES)
@@ -200,6 +200,8 @@ class Engine:
         self.sY = Hist(STUDENT_ROWS_H, (no,))
         self.sT = Hist(STUDENT_ROWS_H, (), np.int64)
         self.sS = Hist(STUDENT_ROWS_H)                    # volatility scale of each row
+        self.sXx = Hist(STUDENT_ROWS_H, (len(student.X_FEATURES),))    # the other venue's view of each row (NaN: none)
+        self.xc = Hist(STUDENT_WIN + 1)                   # the other venue's close of each candle in self.candles
         self.oT = Hist(STUDENT_ROWS_H + 64, (), np.int64)  # what every candle actually did:
         self.oY = Hist(STUDENT_ROWS_H + 64, (3,))          #   return, reach up, reach down
         self.versions = []                   # published parameter versions (see fit_student)
@@ -254,8 +256,9 @@ class Engine:
         # instead of every 5 (the last ones are reused in between) to keep a rebuild fast.
         prev = self.versions[-1] if self.versions else None
         if self.simulate_publish and prev is not None and prev.get("H") is not None and eff % 1800 != 0:
-            H = prev["H"]
+            H, HX = prev["H"], prev.get("HX")
         else:
+            HX = None
             H, oT, oY = [], self.oT.view(), self.oY.view()
             Xa, Sa = self.sX.view(), self.sS.view()
             for h in range(1, HORIZON + 1):
@@ -268,8 +271,15 @@ class Engine:
                 o = oY[idx[use]]
                 H.append(student.fit(Xa[use], student.outcome_targets(o[:, 0], o[:, 1], o[:, 2], Sa[use]), student.RIDGE_H))
             H = None if H is None else rnd(np.array(H))
+            # the cross-venue head: the direction of candle 1 from the same features plus the
+            # other venue's view, on the minutes for which that view existed
+            Xx = self.sXx.view()
+            idx = np.minimum(np.searchsorted(oT, T), len(oT) - 1)
+            use = (oT[idx] == T) & (T <= cutoff_ts) & np.isfinite(Xx).all(1)
+            if H is not None and use.sum() >= 1500:
+                HX = rnd(student.fit(np.hstack([Xa[use], Xx[use]]), np.sign(oY[idx[use], 0])[:, None], student.RIDGE_H)[0])
         self.versions.append({
-            "eff": int(eff), "fmt": student.FORMAT, "W": W, "H": H,
+            "eff": int(eff), "fmt": student.FORMAT, "W": W, "H": H, "HX": HX,
             "scale": [[1.0, 1.0]] + [[float(x) for x in t.scales()] for t in self.tuners_h[1:]],
             "cone": [1.0] + [float(f"{c:.6g}") for c in self.cone[1:]],
             # reversal agents: which published tree model and which thresholds are in force
@@ -288,6 +298,7 @@ class Engine:
             if v["eff"] not in have and v.get("fmt") == student.FORMAT:
                 self.versions.append({"eff": int(v["eff"]), "fmt": v["fmt"], "W": np.array(v["W"], float),
                                       "H": None if v.get("H") is None else np.array(v["H"], float),
+                                      "HX": None if v.get("HX") is None else np.array(v["HX"], float),
                                       "scale": v.get("scale"), "cone": v.get("cone"),
                                       "rm": v.get("rm") or {}, "rt": v.get("rt") or {}, "ct": v.get("ct"), "n": 0, "r2": []})
         self.versions = sorted(self.versions, key=lambda v: v["eff"])[-60:]
@@ -300,14 +311,16 @@ class Engine:
         return best
 
     # ------------------------------------------------------------------
-    def process(self, ts, o, h, l, c, v, feat, gk):
+    def process(self, ts, o, h, l, c, v, feat, gk, xclose=float("nan")):
         """One closed candle. feat: full feature vector (may contain NaN in
-        warm-up). Returns a log row (dict) if a pending forecast was scored."""
+        warm-up). xclose: the close of the same minute on the other venue (NaN
+        if it has none). Returns a log row (dict) if a pending forecast was scored."""
         row = None
         pc = self.prev_close
         self.prev_close = c
         self.last_ts = int(ts)
         self.candles.add([o, h, l, c, v])
+        self.xc.add(xclose)
         if pc is None:
             return None
         r = float(np.log(c / pc))
@@ -339,11 +352,11 @@ class Engine:
             if g:
                 row.update({"g_b": g["b"], "g_u": g["u"], "g_d": g["d"], "g_p": g["p"], "g_05": g["q05"],
                             "g_25": g["q25"], "g_75": g["q75"], "g_95": g["q95"], "g_eff": g["eff"],
-                            "g_call": float(g.get("call", 0))})
+                            "g_call": float(g.get("call", 0)), "g_x": float(g.get("x", 0))})
                 if r != 0:                   # the colour caller learns how its confidence paid off
                     self.colour.observe(ts, abs(g["p"] - 0.5), (g["b"] > 0) == (r > 0))
             else:
-                row.update({k: np.nan for k in ("g_b", "g_u", "g_d", "g_p", "g_05", "g_25", "g_75", "g_95", "g_call")})
+                row.update({k: np.nan for k in ("g_b", "g_u", "g_d", "g_p", "g_05", "g_25", "g_75", "g_95", "g_call", "g_x")})
                 row["g_eff"] = 0
             self.hedge.update(losses)
             self.calib.update(P["cal"], r)
@@ -419,10 +432,11 @@ class Engine:
             q = e.predict(ctx)
             if q is not None and np.all(np.isfinite(q)):
                 exp_q[e.name] = np.asarray(q, float)
-        f = sig = cv = None
+        f = sig = cv = xv = None
         if len(self.candles) == STUDENT_WIN + 1:
             cv = self.candles.view()
             f, sig = student.compact(cv, nxt)
+            xv = student.x_features(cv[:, 3], self.xc.view(), sig)       # the other venue's view, or None
         if self.simulate_publish and nxt % STUDENT_STEP == 0:      # replay: emulate the cloud run that
             self.fit_student(nxt, nxt - STUDENT_LEAD)              # published the version effective now
         ver = self.version_at(nxt)
@@ -460,8 +474,9 @@ class Engine:
                 self.sY.add(student.teacher_targets(P["p_up"], a, e_up, e_dn, cal[0], cal[2], cal[6], cal[8], sig))
                 self.sT.add(nxt)
                 self.sS.add(sig)
+                self.sXx.add(np.full(len(student.X_FEATURES), np.nan) if xv is None else xv)
                 if ver is not None:
-                    path = student.generate_path(ver, f, sig)
+                    path = student.generate_path(ver, f, sig, xv)
                     P["gen"] = dict(path[0], eff=ver["eff"])
                     for j, g in enumerate(path[1:]):
                         self.multi.setdefault(nxt + (j + 1) * GRAN, {})[j + 2] = dict(

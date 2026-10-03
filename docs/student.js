@@ -3,6 +3,7 @@
 // return the same numbers.
 (function (root) {
   const WIN = 240, LAM = 0.97, OFF = 0.01, OFF_H = 0.1, GRAN = 60, FORMAT = 2;
+  const X_WIN = 60, X_MIN = 20;             // cross-venue agent: minutes looked back on, and how many must be present
   const FLIP = [1, 2, 3, 4, 5, 6, 9, 14];
   const clip = (x, a) => Math.max(-a, Math.min(a, x));
   const dot = (row, f) => { let s = 0; for (let i = 0; i < row.length; i++) s += row[i] * f[i]; return s; };
@@ -87,10 +88,27 @@
     return { d: p >= 0.5 ? 1 : -1, a: size(y[1]), eUp: size(y[2]), eDn: size(y[3]), p };
   }
 
-  // The next candles as one connected chain (see generate_path in probcast/student.py).
-  // ver: {fmt, W, H, scale, cone}. o: where a candle opens; lo / hi: 90% range of its
-  // close - all log-offsets from the last real close. The chain never leaves the model's
-  // own 50% range: a candle that would is drawn in the other colour (flip).
+  // The cross-venue agent's view at a minute close (mirror of x_features in student.py).
+  // close, xclose: closes of this market and of the same asset on the other venue for the
+  // same minutes, oldest first, the last one being the candle that just closed (null / NaN
+  // where the other venue has no candle). Returns [x_gap, x_lead1, x_lead3, x_lead5] in units
+  // of this market's typical one-minute move, or null when the view is not available.
+  function xFeatures(close, xclose, sig) {
+    if (close.length < X_WIN || xclose.length < X_WIN || !(sig > 0)) return null;
+    const c = close.slice(-X_WIN), x = xclose.slice(-X_WIN);
+    const ok = x.map((v) => typeof v === "number" && isFinite(v) && v > 0);
+    const n = ok.reduce((a, b) => a + (b ? 1 : 0), 0);
+    if (!ok[X_WIN - 1] || n < X_MIN) return null;
+    const g = x.map((v, i) => (ok[i] ? Math.log(v / c[i]) : NaN));
+    const srt = g.filter((v, i) => ok[i]).sort((a, b) => a - b);
+    const med = srt.length % 2 ? srt[(srt.length - 1) / 2] : (srt[srt.length / 2 - 1] + srt[srt.length / 2]) / 2;
+    const last = g[X_WIN - 1];
+    const back = (k) => { let i = X_WIN - 1 - k; while (i >= 0 && !ok[i]) i--; return i >= 0 ? g[i] : last; };
+    const out = [(last - med) / sig];
+    for (const k of [1, 3, 5]) out.push((last - back(k)) / (sig * Math.sqrt(k)));
+    return out.map((v) => clip(v, 8));
+  }
+
   // How far the model stands behind a colour call with P(up) = p: 0 = close to a coin flip,
   // 1 = confident, 2 = strong. ct: the colour caller's published lines, ascending.
   // Compared in millionths (as in student.py).
@@ -101,11 +119,17 @@
     for (const t of ver.ct) if (c >= Math.floor(t * 1e6 + 0.5)) n++;
     return n;
   }
-  function generatePath(ver, f, sig) {
+  // The next candles as one connected chain (see generate_path in probcast/student.py).
+  // ver: {fmt, W, H, HX, scale, cone, ct}. o: where a candle opens; lo / hi: 90% range of its
+  // close - all log-offsets from the last real close. The chain never leaves the model's
+  // own 50% range: a candle that would is drawn in the other colour (flip). x: the
+  // cross-venue view (xFeatures) or null; with it and a published HX, the colour of
+  // candle 1 comes from the head that reads both.
+  function generatePath(ver, f, sig, x) {
     const n = nextRaw(ver.W, f, sig);
     if (!ver.H || ver.fmt !== FORMAT) {
       const g = generate(ver.W, f, sig);
-      g.o = 0; g.lo = g.q05; g.hi = g.q95; g.flip = 0; g.call = 0;
+      g.o = 0; g.lo = g.q05; g.hi = g.q95; g.flip = 0; g.call = 0; g.x = 0;
       return [g];
     }
     const iq = 0.5 * (n.q75 - n.q25);
@@ -113,6 +137,12 @@
     let o = 0;
     for (let h = 1; h <= ver.H.length; h++) {
       const r = horizonRaw(ver.H[h - 1], f, sig);
+      let used = 0;
+      if (h === 1 && x && ver.HX) {
+        r.p = Math.min(Math.max(0.5 + 0.5 * dot(ver.HX, f.concat(x)), 0.02), 0.98);
+        r.d = r.p >= 0.5 ? 1 : -1;
+        used = 1;
+      }
       let a = r.a, eUp = r.eUp, eDn = r.eDn, cone = 1;
       if (h === 1) { a = n.a; eUp = n.eUp; eDn = n.eDn; }
       else { const [kb, kr] = ver.scale[h - 1]; a = a * kb; eUp = eUp * kr; eDn = eDn * kr; cone = ver.cone[h - 1]; }
@@ -122,7 +152,7 @@
       if (flip) b = -b;
       const g = { p: r.p, b, u: Math.max(eUp - Math.max(b, 0), 0), d: Math.max(eDn - Math.max(-b, 0), 0),
         o, lo: cone * n.q05, hi: cone * n.q95, flip: flip ? 1 : 0 };
-      if (h === 1) { g.q05 = n.q05; g.q25 = n.q25; g.q75 = n.q75; g.q95 = n.q95; g.call = callLevel(ver, r.p); }
+      if (h === 1) { g.q05 = n.q05; g.q25 = n.q25; g.q75 = n.q75; g.q95 = n.q95; g.call = callLevel(ver, r.p); g.x = used; }
       path.push(g);
       o += b;
     }
@@ -225,7 +255,7 @@
     return { body, range, score: 0.5 * body + 0.5 * range };
   }
 
-  const api = { WIN, GRAN, FORMAT, regularize, compact, generate, generatePath, callLevel, revFeatures, revRows, treeProb, revProbs,
+  const api = { WIN, GRAN, FORMAT, regularize, compact, generate, generatePath, callLevel, xFeatures, X_WIN, revFeatures, revRows, treeProb, revProbs,
     isSwing, swingNear, versionAt, candleScore };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Student = api;

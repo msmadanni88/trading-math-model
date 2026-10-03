@@ -9,7 +9,7 @@ import pandas as pd
 
 from . import goal, store, student
 from .agents.reversal import TYPES, spaced
-from .config import CLEAR_K, COL_PER_DAY, GRAN, HORIZON, PRODUCT, REV_HS, REV_K, REV_KS, REV_MIN_PER_DAY
+from .config import CLEAR_K, COL_PER_DAY, GRAN, HORIZON, PRODUCT, REV_HS, REV_K, REV_KS, REV_MIN_PER_DAY, X_INST, X_MIN, X_WIN
 from .core import QUANTILES
 
 TAUS = [f"{int(round(t * 100)):02d}" for t in QUANTILES]
@@ -376,6 +376,20 @@ def build(fc, eng, candles, status, state_dir, meta=None):
     rep["ledger"] = ledger_summary(led, store.day(now_ts))
     rep["slices"] = slices(fc, calls) if len(fc) else None
     rep["colour"] = dict(eng.colour.summary(), per_day=list(COL_PER_DAY), clear_k=CLEAR_K)
+    # cross-venue agent: is the other venue's price arriving, and is the head that reads it in use
+    day_ = fc[fc["ts"] >= now_ts - 86400] if len(fc) else fc
+    gx = day_["g_x"] if len(day_) and "g_x" in day_ else pd.Series(dtype=float)
+    seen = candles["xclose"].iloc[-1440:] if "xclose" in candles else pd.Series(dtype=float)
+    rep["venue"] = {"source": "OKX", "inst": X_INST, "features": student.X_FEATURES,
+                    "head": bool(eng.versions and eng.versions[-1].get("HX") is not None),
+                    "seen_24h": _r(seen.notna().mean()) if len(seen) else None,
+                    "used_24h": _r(gx.dropna().mean()) if gx.notna().sum() else None,
+                    "fetch_error": status.get("x_fetch_error")}
+    if len(fc) and "g_x" in fc:                 # the same predictions, split by whether the other venue was read
+        x = fc[(fc["y"] != 0) & fc["g_b"].notna() & fc["g_x"].notna() & (fc["ts"] >= now_ts - 30 * 86400)]
+        win = (x["g_b"] > 0) == (x["y"] > 0)
+        cut = lambda m: None if m.sum() < 30 else {"n": int(m.sum()), "rate": round(float(win[m].mean()), 4)}
+        rep["venue"]["colour_30d"] = {"with": cut(x["g_x"] == 1), "without": cut(x["g_x"] == 0)}
 
     P = eng.pending
     if P is not None and P.get("cal") is not None:
@@ -446,6 +460,11 @@ def build(fc, eng, candles, status, state_dir, meta=None):
         t = (b or {}).get("trend")
         if t and t["verdict"] == "down":
             al.append(f"WIN RATE FALLING: {layer} {b['7d']['rate']:.3f} in the last 7 days, {t['change']:+.3f} against the 7 before")
+    vn = rep["venue"]
+    if vn["fetch_error"]:
+        al.append("other venue: download failed - " + str(vn["fetch_error"])[:160])
+    elif vn["seen_24h"] is not None and vn["seen_24h"] < 0.9:
+        al.append(f"other venue: only {vn['seen_24h']:.0%} of the last 24 hours have its candle - the next-candle colour falls back to this market alone")
     if P is None or P.get("cal") is None:
         al.append("no forecast is pending for the next candle")
     elif P.get("gen") is None:
@@ -477,8 +496,9 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
         tail = fc[fc["ts"] >= first]
         g = tail[tail["g_b"].notna()]
         call = g["g_call"] if "g_call" in g else pd.Series(np.nan, index=g.index)
-        gen = [[int(t)] + [sig6(x) for x in vals] + [None if cl != cl else int(cl)]
-               for t, cl, *vals in zip(g["ts"], call, g["g_b"], g["g_u"], g["g_d"], g["g_p"], g["g_05"], g["g_25"], g["g_75"], g["g_95"])]
+        gx = g["g_x"] if "g_x" in g else pd.Series(np.nan, index=g.index)
+        gen = [[int(t)] + [sig6(x) for x in vals] + [None if cl != cl else int(cl), None if xx != xx else int(xx)]
+               for t, cl, xx, *vals in zip(g["ts"], call, gx, g["g_b"], g["g_u"], g["g_d"], g["g_p"], g["g_05"], g["g_25"], g["g_75"], g["g_95"])]
         if "lk_o" in tail:
             k = tail[tail["lk_o"].notna()]
             locked = [[int(t), int(h)] + [sig6(x) for x in vals]
@@ -491,7 +511,7 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
     P = eng.pending
     if P is not None and P.get("gen"):
         gg = P["gen"]
-        gen.append([int(P["for_ts"])] + [sig6(gg[k]) for k in ("b", "u", "d", "p", "q05", "q25", "q75", "q95")] + [int(gg.get("call", 0))])
+        gen.append([int(P["for_ts"])] + [sig6(gg[k]) for k in ("b", "u", "d", "p", "q05", "q25", "q75", "q95")] + [int(gg.get("call", 0)), int(gg.get("x", 0))])
     for t in sorted(eng.snap):                              # minutes of the current chain that have not closed yet
         e = eng.snap[t]
         locked.append([int(t), int(e["h"])] + [sig6(e[x]) for x in ("o", "b", "u", "d")])
@@ -516,13 +536,13 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
     gen_ts = int(rep["status"]["run_ts"])
     latest = {"v": 2, "product": PRODUCT, "gran": GRAN, "generated": gen_ts,
               "last_ts": int(candles["ts"].iloc[-1]), "live_since": rep.get("live_since"), "candles": cand,
-              "gen_cols": ["ts", "b", "u", "d", "p", "q05", "q25", "q75", "q95", "call"], "gen": gen,
+              "gen_cols": ["ts", "b", "u", "d", "p", "q05", "q25", "q75", "q95", "call", "x"], "gen": gen,
               "path_cols": ["b", "u", "d", "p", "o", "lo", "hi"], "path": path, "horizon": HORIZON,
               "locked_cols": ["ts", "h", "o", "b", "u", "d"], "locked": locked,
               "rev_cols": {"calls": ["made_ts", "for_ts", "side", "typ", "p", "level", "hit"],
                            "probs": ["ts", "top_now", "top_next", "bottom_now", "bottom_next"]},
               "rev": rev, "rev_min_per_day": REV_MIN_PER_DAY, "curve_thresholds": CURVE,
-              "ledger": rep.get("ledger"), "slices": rep.get("slices"), "colour": rep.get("colour"),
+              "ledger": rep.get("ledger"), "slices": rep.get("slices"), "colour": rep.get("colour"), "venue": rep.get("venue"),
               "learning": rep.get("learning"),
               "windows": slim, "next": rep.get("next"), "hmm": rep.get("hmm"), "student": rep.get("student"),
               "alerts": rep["alerts"], "retrain_log": rep["retrain_log"][-3:]}
@@ -532,11 +552,13 @@ def publish(fc, eng, candles, rep, state_dir, calls, n=720):
     # in force; a restored engine (see run.py) may need to look further back.
     out = lambda v: {"eff": v["eff"], "fmt": v.get("fmt"), "W": v["W"].tolist(),
                      "H": None if v.get("H") is None else np.asarray(v["H"]).tolist(),
+                     "HX": None if v.get("HX") is None else np.asarray(v["HX"]).tolist(),
                      "scale": v.get("scale"), "cone": v.get("cone"), "rm": v.get("rm"), "rt": v.get("rt"), "ct": v.get("ct")}
     vers = eng.versions[-4:]
     params = {"v": 2, "fmt": student.FORMAT, "win": student.STUDENT_WIN, "lam": student.LAM, "horizon": HORIZON,
               "features": student.FEATURES, "outputs": student.OUTPUTS, "h_outputs": student.H_OUTPUTS,
               "rev": {"ks": list(REV_KS), "k": REV_K, "hs": list(REV_HS), "features": student.REV_FEATURES},
+              "x": {"source": "OKX", "inst": X_INST, "win": X_WIN, "min": X_MIN, "features": student.X_FEATURES},
               "versions": [out(v) for v in vers]}
     store.write_json(os.path.join(live, "params.json"), params)
     store.write_json(os.path.join(state_dir, "versions.json"), {"v": 2, "versions": [out(v) for v in eng.versions[-14:]]})
@@ -573,6 +595,11 @@ def markdown(rep, agents):
     cl = rep.get("colour") or {}
     L += ["", f"- colour caller: a colour call is confident / strong when |P(up) - 0.5| is at least {cl.get('threshold')} "
               f"(about {cl.get('per_day')} calls a day); over its last 7 days: {cl.get('tuned')}"]
+    vn = rep.get("venue") or {}
+    cx = vn.get("colour_30d") or {}
+    L += [f"- cross-venue agent: {vn.get('source')} {vn.get('inst')}; its candle was there for {vn.get('seen_24h')} of the last 24 hours, "
+          f"the head that reads it made {vn.get('used_24h')} of the predictions; colour right over 30 days with it: {cx.get('with')}, "
+          f"without it: {cx.get('without')}"]
     if rep.get("slices"):
         L += ["", "## By market regime (last 30 days of the record)", "",
               "| regime | candles | candle score | colour right | confident colour right | 'turn is in' hit rate |", "|---|---|---|---|---|---|"]

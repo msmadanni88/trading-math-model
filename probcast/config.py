@@ -39,3 +39,8 @@ REV_TUNE_WIN = 10080           # ... from its own last 7 days
 COL_PER_DAY = (144, 36)        # colour calls a day: "confident" (one minute in ten) and "strong" (one in forty)
 COL_TUNE_WIN = 10080           # the lines are re-drawn from its last 7 days of judged candles
 CLEAR_K = 0.5                  # a "clear" candle moved more than this many typical moves (ledger layer colour_clear)
+
+# cross-venue agent: the same asset on another venue, whose price moves first (EXPERIMENTS.md, E14)
+X_INST = os.environ.get("X_INST", "ETH-USDT-SWAP")   # OKX perpetual: reachable from the cloud runner and from browsers
+X_WIN = 60                     # minutes of price gap the agent looks back on
+X_MIN = 20                     # ... of which at least this many must have a candle on the other venue
