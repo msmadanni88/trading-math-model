@@ -1,7 +1,7 @@
 # ETH-USD 60s candle generator - report
 
-- generated: 2026-10-03 12:28 UTC
-- last closed candle: 2026-10-03 12:28 UTC (staleness 0.4 min)
+- generated: 2026-10-03 16:37 UTC
+- last closed candle: 2026-10-03 16:37 UTC (staleness 0.8 min)
 - this generation of the models went live: 2026-10-03 12:14 UTC (numbers for earlier days are a replay of history, minute by minute, with only the past visible)
 
 ## Goal keeper alerts
@@ -34,113 +34,113 @@ score = 0.5 x body overlap + 0.5 x range overlap (1.0 = identical candle). `site
 
 | window | n | site score | full score | repeat | typical | site colour right | site body IoU | site range IoU | body size ratio |
 |---|---|---|---|---|---|---|---|---|---|
-| 1h | 60 | 0.303 | 0.305 | 0.226 | 0.226 | 0.433 | 0.220 | 0.385 | 1.024 |
-| 6h | 360 | 0.325 | 0.313 | 0.235 | 0.257 | 0.515 | 0.251 | 0.398 | 1.063 |
-| 24h | 1440 | 0.340 | 0.339 | 0.262 | 0.290 | 0.502 | 0.234 | 0.446 | 1.091 |
-| 7d | 10080 | 0.358 | 0.358 | 0.286 | 0.314 | 0.504 | 0.244 | 0.473 | 1.337 |
-| 30d | 43200 | 0.356 | 0.356 | 0.280 | 0.311 | 0.500 | 0.245 | 0.467 | 1.276 |
+| 1h | 60 | 0.300 | 0.319 | 0.230 | 0.230 | 0.450 | 0.199 | 0.401 | 2.028 |
+| 6h | 360 | 0.307 | 0.305 | 0.236 | 0.245 | 0.506 | 0.222 | 0.392 | 1.258 |
+| 24h | 1440 | 0.328 | 0.326 | 0.252 | 0.271 | 0.504 | 0.229 | 0.427 | 1.152 |
+| 7d | 10080 | 0.357 | 0.357 | 0.286 | 0.313 | 0.504 | 0.243 | 0.472 | 1.346 |
+| 30d | 43200 | 0.356 | 0.356 | 0.280 | 0.310 | 0.501 | 0.245 | 0.467 | 1.280 |
 
 ## Every candle of the 15-candle chain, judged from its own open (score / colour right / 90% range held the close)
 
-- 1h: 1: 0.303 / 0.433 / 0.833; 2: 0.350 / 0.650 / 0.883; 3: 0.300 / 0.483 / 0.850; 4: 0.316 / 0.467 / 0.850; 5: 0.302 / 0.483 / 0.883; 6: 0.313 / 0.533 / 0.850; 7: 0.359 / 0.583 / 0.833; 8: 0.286 / 0.433 / 0.850; 9: 0.305 / 0.483 / 0.850; 10: 0.325 / 0.550 / 0.833; 11: 0.324 / 0.483 / 0.850; 12: 0.329 / 0.517 / 0.867; 13: 0.311 / 0.450 / 0.833; 14: 0.333 / 0.567 / 0.833; 15: 0.310 / 0.467 / 0.867
-- 6h: 1: 0.325 / 0.515 / 0.867; 2: 0.321 / 0.510 / 0.883; 3: 0.317 / 0.490 / 0.881; 4: 0.318 / 0.521 / 0.892; 5: 0.312 / 0.499 / 0.883; 6: 0.309 / 0.470 / 0.858; 7: 0.322 / 0.527 / 0.861; 8: 0.299 / 0.456 / 0.864; 9: 0.302 / 0.468 / 0.861; 10: 0.316 / 0.496 / 0.864; 11: 0.313 / 0.487 / 0.869; 12: 0.317 / 0.496 / 0.878; 13: 0.310 / 0.479 / 0.886; 14: 0.309 / 0.487 / 0.889; 15: 0.311 / 0.476 / 0.892
-- 24h: 1: 0.340 / 0.502 / 0.901; 2: 0.340 / 0.505 / 0.895; 3: 0.340 / 0.488 / 0.897; 4: 0.338 / 0.506 / 0.902; 5: 0.335 / 0.496 / 0.902; 6: 0.334 / 0.474 / 0.894; 7: 0.340 / 0.510 / 0.895; 8: 0.331 / 0.481 / 0.894; 9: 0.331 / 0.490 / 0.897; 10: 0.330 / 0.479 / 0.897; 11: 0.341 / 0.528 / 0.897; 12: 0.338 / 0.510 / 0.897; 13: 0.332 / 0.490 / 0.897; 14: 0.336 / 0.500 / 0.899; 15: 0.326 / 0.470 / 0.900
-- 7d: 1: 0.358 / 0.504 / 0.899; 2: 0.353 / 0.493 / 0.900; 3: 0.356 / 0.508 / 0.900; 4: 0.352 / 0.492 / 0.900; 5: 0.353 / 0.507 / 0.901; 6: 0.351 / 0.501 / 0.899; 7: 0.351 / 0.499 / 0.899; 8: 0.351 / 0.507 / 0.899; 9: 0.348 / 0.495 / 0.899; 10: 0.349 / 0.504 / 0.900; 11: 0.350 / 0.505 / 0.900; 12: 0.351 / 0.508 / 0.900; 13: 0.350 / 0.502 / 0.900; 14: 0.348 / 0.498 / 0.901; 15: 0.348 / 0.500 / 0.900
-- 30d: 1: 0.356 / 0.500 / 0.899; 2: 0.353 / 0.497 / 0.900; 3: 0.355 / 0.505 / 0.900; 4: 0.351 / 0.499 / 0.900; 5: 0.352 / 0.501 / 0.900; 6: 0.352 / 0.505 / 0.900; 7: 0.351 / 0.506 / 0.900; 8: 0.350 / 0.503 / 0.900; 9: 0.348 / 0.499 / 0.900; 10: 0.349 / 0.503 / 0.900; 11: 0.348 / 0.502 / 0.900; 12: 0.348 / 0.501 / 0.900; 13: 0.347 / 0.500 / 0.900; 14: 0.346 / 0.495 / 0.900; 15: 0.346 / 0.495 / 0.900
+- 1h: 1: 0.300 / 0.450 / 0.900; 2: 0.304 / 0.517 / 0.933; 3: 0.283 / 0.517 / 0.900; 4: 0.309 / 0.567 / 0.883; 5: 0.291 / 0.533 / 0.867; 6: 0.265 / 0.500 / 0.867; 7: 0.253 / 0.367 / 0.850; 8: 0.265 / 0.417 / 0.850; 9: 0.290 / 0.467 / 0.850; 10: 0.305 / 0.617 / 0.883; 11: 0.286 / 0.533 / 0.867; 12: 0.284 / 0.567 / 0.850; 13: 0.298 / 0.550 / 0.850; 14: 0.295 / 0.517 / 0.967; 15: 0.282 / 0.483 / 0.933
+- 6h: 1: 0.307 / 0.506 / 0.864; 2: 0.308 / 0.500 / 0.894; 3: 0.300 / 0.514 / 0.894; 4: 0.317 / 0.534 / 0.889; 5: 0.305 / 0.508 / 0.889; 6: 0.302 / 0.508 / 0.889; 7: 0.311 / 0.483 / 0.886; 8: 0.298 / 0.472 / 0.894; 9: 0.301 / 0.483 / 0.900; 10: 0.319 / 0.554 / 0.906; 11: 0.315 / 0.551 / 0.883; 12: 0.305 / 0.497 / 0.872; 13: 0.318 / 0.525 / 0.856; 14: 0.307 / 0.469 / 0.867; 15: 0.298 / 0.452 / 0.886
+- 24h: 1: 0.328 / 0.504 / 0.894; 2: 0.327 / 0.492 / 0.896; 3: 0.329 / 0.498 / 0.897; 4: 0.329 / 0.510 / 0.899; 5: 0.325 / 0.507 / 0.899; 6: 0.321 / 0.476 / 0.892; 7: 0.327 / 0.490 / 0.892; 8: 0.321 / 0.486 / 0.896; 9: 0.320 / 0.483 / 0.897; 10: 0.323 / 0.489 / 0.900; 11: 0.332 / 0.546 / 0.897; 12: 0.324 / 0.502 / 0.894; 13: 0.327 / 0.506 / 0.894; 14: 0.325 / 0.491 / 0.897; 15: 0.316 / 0.466 / 0.900
+- 7d: 1: 0.357 / 0.504 / 0.899; 2: 0.352 / 0.491 / 0.900; 3: 0.355 / 0.508 / 0.900; 4: 0.352 / 0.494 / 0.900; 5: 0.352 / 0.508 / 0.900; 6: 0.350 / 0.501 / 0.899; 7: 0.351 / 0.498 / 0.899; 8: 0.350 / 0.506 / 0.899; 9: 0.347 / 0.494 / 0.899; 10: 0.349 / 0.504 / 0.900; 11: 0.349 / 0.506 / 0.899; 12: 0.351 / 0.509 / 0.899; 13: 0.350 / 0.504 / 0.898; 14: 0.347 / 0.496 / 0.899; 15: 0.347 / 0.499 / 0.899
+- 30d: 1: 0.356 / 0.501 / 0.899; 2: 0.353 / 0.497 / 0.900; 3: 0.354 / 0.506 / 0.900; 4: 0.351 / 0.499 / 0.900; 5: 0.351 / 0.502 / 0.900; 6: 0.351 / 0.505 / 0.900; 7: 0.351 / 0.506 / 0.900; 8: 0.349 / 0.503 / 0.900; 9: 0.347 / 0.499 / 0.900; 10: 0.349 / 0.503 / 0.900; 11: 0.348 / 0.502 / 0.900; 12: 0.348 / 0.501 / 0.900; 13: 0.347 / 0.500 / 0.900; 14: 0.346 / 0.495 / 0.900; 15: 0.345 / 0.495 / 0.900
 
 ## The fixed record: the chain frozen at the start of every 15 minutes, compared at its real price level
 
-- 1h: match 0.088 (body 0.074, range 0.102); 'price stays where it was' would score 0.085; colour right 0.417; typical miss of the close 3.5 bp; chain ended on the right side - of 0 chains; n=60
-- 6h: match 0.116 (body 0.083, range 0.149); 'price stays where it was' would score 0.118; colour right 0.479; typical miss of the close 3.5 bp; chain ended on the right side 0.542 of 24 chains; n=360
-- 24h: match 0.118 (body 0.075, range 0.161); 'price stays where it was' would score 0.126; colour right 0.498; typical miss of the close 5.7 bp; chain ended on the right side 0.526 of 95 chains; n=1440
-- 7d: match 0.119 (body 0.078, range 0.159); 'price stays where it was' would score 0.120; colour right 0.495; typical miss of the close 7.7 bp; chain ended on the right side 0.521 of 670 chains; n=10080
-- 30d: match 0.122 (body 0.081, range 0.162); 'price stays where it was' would score 0.128; colour right 0.498; typical miss of the close 8.4 bp; chain ended on the right side 0.510 of 2876 chains; n=43200
-- by candle of the chain (match / typical miss of the close in bp): 1: 0.365 / 4.4; 2: 0.198 / 4.5; 3: 0.170 / 6.4; 4: 0.133 / 6.7; 5: 0.122 / 7.5; 6: 0.113 / 8.4; 7: 0.102 / 8.9; 8: 0.093 / 9.4; 9: 0.089 / 9.5; 10: 0.084 / 10.4; 11: 0.078 / 11.0; 12: 0.076 / 11.4; 13: 0.069 / 11.8; 14: 0.068 / 11.8; 15: 0.062 / 12.2
+- 1h: match 0.067 (body 0.036, range 0.098); 'price stays where it was' would score 0.050; colour right 0.567; typical miss of the close 3.7 bp; chain ended on the right side - of 0 chains; n=60
+- 6h: match 0.087 (body 0.061, range 0.113); 'price stays where it was' would score 0.073; colour right 0.489; typical miss of the close 3.9 bp; chain ended on the right side 0.583 of 24 chains; n=360
+- 24h: match 0.112 (body 0.072, range 0.152); 'price stays where it was' would score 0.112; colour right 0.505; typical miss of the close 4.7 bp; chain ended on the right side 0.558 of 95 chains; n=1440
+- 7d: match 0.118 (body 0.077, range 0.158); 'price stays where it was' would score 0.118; colour right 0.495; typical miss of the close 7.7 bp; chain ended on the right side 0.527 of 670 chains; n=10080
+- 30d: match 0.122 (body 0.081, range 0.162); 'price stays where it was' would score 0.128; colour right 0.498; typical miss of the close 8.3 bp; chain ended on the right side 0.511 of 2876 chains; n=43200
+- by candle of the chain (match / typical miss of the close in bp): 1: 0.365 / 4.4; 2: 0.197 / 4.5; 3: 0.169 / 6.3; 4: 0.133 / 6.6; 5: 0.122 / 7.4; 6: 0.113 / 8.3; 7: 0.102 / 8.7; 8: 0.093 / 9.3; 9: 0.089 / 9.4; 10: 0.085 / 10.3; 11: 0.078 / 10.8; 12: 0.077 / 11.2; 13: 0.068 / 11.6; 14: 0.068 / 11.6; 15: 0.063 / 12.0
 
 ## Reversal agents
 
 - a swing point of size K = highest high / lowest low of K candles on each side
 - `now`: the turn is in (a swing point at the candle that just closed, give or take one); `next`: a turn is coming (a swing point in one of the next three candles). A call is a hit if that happens.
 - an agent picks its own confidence threshold: the best hit rate of its last 7 days among thresholds that keep 48 calls a day
-- **K=3**: model 1790553600, labels learned 88342, probability skill vs chance 0.2312, widened contest next: True
-  - now: threshold 0.8393, hit rate recent 0.9248 / long run 0.9415
-    - 6h: 17 calls (69 a day), hit rate 0.882, chance 0.279, naive rule 0.488, lift 3.16x
-    - 24h: 57 calls (57 a day), hit rate 0.912, chance 0.287, naive rule 0.491, lift 3.18x
-    - 7d: 390 calls (56 a day), hit rate 0.951, chance 0.290, naive rule 0.485, lift 3.28x
-    - 30d: 1717 calls (57 a day), hit rate 0.942, chance 0.292, naive rule 0.481, lift 3.22x
-  - next: threshold 0.533, hit rate recent 0.5189 / long run 0.5773
-    - 6h: 38 calls (154 a day), hit rate 0.500, chance 0.279, lift 1.79x
-    - 24h: 97 calls (97 a day), hit rate 0.485, chance 0.287, lift 1.69x
-    - 7d: 641 calls (92 a day), hit rate 0.577, chance 0.290, lift 1.99x
-    - 30d: 2385 calls (80 a day), hit rate 0.583, chance 0.292, lift 2.00x
-  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 568, 0.493; 0.35: 538, 0.518; 0.40: 490, 0.558; 0.45: 424, 0.623; 0.50: 370, 0.678; 0.55: 323, 0.723; 0.60: 276, 0.764; 0.65: 225, 0.800; 0.70: 183, 0.832; 0.75: 141, 0.866; 0.80: 100, 0.905; 0.85: 50, 0.949; 0.90: 1, 0.970
-  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 582, 0.425; 0.35: 496, 0.459; 0.40: 412, 0.488; 0.45: 317, 0.519; 0.50: 208, 0.549; 0.55: 94, 0.586; 0.60: 12, 0.610; 0.65: 0, 0.750
-- **K=5**: model 1790208000, labels learned 88340, probability skill vs chance 0.2226, widened contest next: True
-  - now: threshold 0.7087, hit rate recent 0.8618 / long run 0.8429
-    - 6h: 17 calls (69 a day), hit rate 0.882, chance 0.193, naive rule 0.413, lift 4.58x
-    - 24h: 60 calls (60 a day), hit rate 0.867, chance 0.195, naive rule 0.415, lift 4.45x
-    - 7d: 363 calls (52 a day), hit rate 0.868, chance 0.187, naive rule 0.394, lift 4.65x
-    - 30d: 1582 calls (53 a day), hit rate 0.838, chance 0.187, naive rule 0.391, lift 4.49x
-  - next: threshold 0.3966, hit rate recent 0.4304 / long run 0.4828
-    - 6h: 39 calls (159 a day), hit rate 0.410, chance 0.193, lift 2.13x
-    - 24h: 171 calls (172 a day), hit rate 0.444, chance 0.195, lift 2.28x
-    - 7d: 578 calls (83 a day), hit rate 0.460, chance 0.187, lift 2.46x
-    - 30d: 2005 calls (67 a day), hit rate 0.490, chance 0.187, lift 2.63x
-  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 434, 0.410; 0.35: 375, 0.460; 0.40: 304, 0.528; 0.45: 249, 0.585; 0.50: 194, 0.645; 0.55: 148, 0.695; 0.60: 116, 0.738; 0.65: 88, 0.781; 0.70: 65, 0.819; 0.75: 35, 0.857; 0.80: 9, 0.875
-  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 342, 0.386; 0.35: 255, 0.424; 0.40: 169, 0.447; 0.45: 89, 0.473; 0.50: 22, 0.513; 0.55: 3, 0.583
-- **K=8**: model 1790553600, labels learned 88337, probability skill vs chance 0.2037, widened contest next: False
-  - now: threshold 0.5638, hit rate recent 0.789 / long run 0.7315
-    - 6h: 14 calls (58 a day), hit rate 0.929, chance 0.127, naive rule 0.338, lift 7.30x
-    - 24h: 53 calls (53 a day), hit rate 0.830, chance 0.128, naive rule 0.349, lift 6.49x
-    - 7d: 327 calls (47 a day), hit rate 0.740, chance 0.122, naive rule 0.328, lift 6.07x
-    - 30d: 1552 calls (52 a day), hit rate 0.718, chance 0.122, naive rule 0.327, lift 5.90x
-  - next: threshold 0.3658, hit rate recent 0.3982 / long run 0.4054
-    - 6h: 21 calls (86 a day), hit rate 0.476, chance 0.127, lift 3.75x
-    - 24h: 56 calls (56 a day), hit rate 0.429, chance 0.128, lift 3.35x
-    - 7d: 401 calls (57 a day), hit rate 0.377, chance 0.122, lift 3.09x
-    - 30d: 2015 calls (67 a day), hit rate 0.400, chance 0.122, lift 3.28x
-  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 280, 0.394; 0.35: 211, 0.469; 0.40: 163, 0.534; 0.45: 129, 0.583; 0.50: 99, 0.625; 0.55: 70, 0.680; 0.60: 47, 0.723; 0.65: 25, 0.755; 0.70: 9, 0.796; 0.75: 1, 0.806
-  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 191, 0.343; 0.35: 120, 0.380; 0.40: 49, 0.407; 0.45: 10, 0.431; 0.50: 1, 0.476
-- **K=13**: model 1790208000, labels learned 88332, probability skill vs chance 0.1855, widened contest next: False
-  - now: threshold 0.4103, hit rate recent 0.6639 / long run 0.5915
-    - 6h: 11 calls (46 a day), hit rate 0.909, chance 0.090, naive rule 0.314, lift 10.12x
-    - 24h: 52 calls (53 a day), hit rate 0.673, chance 0.077, naive rule 0.273, lift 8.76x
-    - 7d: 344 calls (49 a day), hit rate 0.584, chance 0.077, naive rule 0.262, lift 7.54x
-    - 30d: 1428 calls (48 a day), hit rate 0.586, chance 0.076, naive rule 0.266, lift 7.67x
-  - next: threshold 0.2608, hit rate recent 0.2838 / long run 0.2944
-    - 6h: 21 calls (88 a day), hit rate 0.333, chance 0.090, lift 3.71x
-    - 24h: 75 calls (76 a day), hit rate 0.267, chance 0.077, lift 3.47x
-    - 7d: 605 calls (87 a day), hit rate 0.269, chance 0.077, lift 3.48x
-    - 30d: 2002 calls (67 a day), hit rate 0.306, chance 0.076, lift 4.00x
-  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 125, 0.431; 0.35: 92, 0.488; 0.40: 66, 0.534; 0.45: 46, 0.593; 0.50: 30, 0.615; 0.55: 17, 0.654; 0.60: 7, 0.668; 0.65: 2, 0.754; 0.70: 0, 0.667
-  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 52, 0.315; 0.35: 18, 0.350; 0.40: 4, 0.331; 0.45: 1, 0.400
+- **K=3**: model 1790553600, labels learned 88591, probability skill vs chance 0.2276, widened contest next: True
+  - now: threshold 0.8393, hit rate recent 0.9156 / long run 0.9404
+    - 6h: 12 calls (49 a day), hit rate 0.833, chance 0.286, naive rule 0.458, lift 2.91x
+    - 24h: 53 calls (53 a day), hit rate 0.887, chance 0.289, naive rule 0.491, lift 3.07x
+    - 7d: 386 calls (55 a day), hit rate 0.948, chance 0.289, naive rule 0.483, lift 3.28x
+    - 30d: 1710 calls (57 a day), hit rate 0.942, chance 0.292, naive rule 0.481, lift 3.22x
+  - next: threshold 0.533, hit rate recent 0.5074 / long run 0.5729
+    - 6h: 43 calls (174 a day), hit rate 0.488, chance 0.286, lift 1.71x
+    - 24h: 117 calls (117 a day), hit rate 0.496, chance 0.289, lift 1.71x
+    - 7d: 659 calls (94 a day), hit rate 0.574, chance 0.289, lift 1.99x
+    - 30d: 2405 calls (80 a day), hit rate 0.583, chance 0.292, lift 1.99x
+  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 568, 0.493; 0.35: 538, 0.518; 0.40: 490, 0.558; 0.45: 424, 0.624; 0.50: 370, 0.679; 0.55: 323, 0.724; 0.60: 275, 0.765; 0.65: 225, 0.801; 0.70: 183, 0.833; 0.75: 141, 0.867; 0.80: 100, 0.906; 0.85: 49, 0.949; 0.90: 1, 0.971
+  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 582, 0.424; 0.35: 496, 0.459; 0.40: 413, 0.487; 0.45: 317, 0.519; 0.50: 209, 0.549; 0.55: 94, 0.585; 0.60: 13, 0.607; 0.65: 0, 0.750
+- **K=5**: model 1790208000, labels learned 88589, probability skill vs chance 0.2203, widened contest next: True
+  - now: threshold 0.7087, hit rate recent 0.8379 / long run 0.8405
+    - 6h: 16 calls (65 a day), hit rate 0.812, chance 0.184, naive rule 0.369, lift 4.41x
+    - 24h: 58 calls (58 a day), hit rate 0.810, chance 0.191, naive rule 0.400, lift 4.25x
+    - 7d: 363 calls (52 a day), hit rate 0.862, chance 0.186, naive rule 0.391, lift 4.64x
+    - 30d: 1582 calls (53 a day), hit rate 0.836, chance 0.187, naive rule 0.391, lift 4.48x
+  - next: threshold 0.3966, hit rate recent 0.3858 / long run 0.474
+    - 6h: 43 calls (175 a day), hit rate 0.372, chance 0.184, lift 2.02x
+    - 24h: 176 calls (177 a day), hit rate 0.409, chance 0.191, lift 2.14x
+    - 7d: 606 calls (87 a day), hit rate 0.452, chance 0.186, lift 2.43x
+    - 30d: 2029 calls (68 a day), hit rate 0.487, chance 0.187, lift 2.61x
+  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 434, 0.410; 0.35: 375, 0.461; 0.40: 303, 0.529; 0.45: 248, 0.586; 0.50: 194, 0.646; 0.55: 148, 0.696; 0.60: 116, 0.738; 0.65: 88, 0.780; 0.70: 65, 0.819; 0.75: 35, 0.855; 0.80: 9, 0.871
+  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 342, 0.386; 0.35: 255, 0.423; 0.40: 169, 0.447; 0.45: 89, 0.472; 0.50: 23, 0.513; 0.55: 3, 0.578
+- **K=8**: model 1790553600, labels learned 88586, probability skill vs chance 0.2063, widened contest next: False
+  - now: threshold 0.5638, hit rate recent 0.7781 / long run 0.7308
+    - 6h: 11 calls (45 a day), hit rate 0.727, chance 0.123, naive rule 0.336, lift 5.92x
+    - 24h: 48 calls (48 a day), hit rate 0.792, chance 0.120, naive rule 0.329, lift 6.60x
+    - 7d: 324 calls (46 a day), hit rate 0.741, chance 0.122, naive rule 0.327, lift 6.09x
+    - 30d: 1548 calls (52 a day), hit rate 0.718, chance 0.122, naive rule 0.327, lift 5.90x
+  - next: threshold 0.3658, hit rate recent 0.4018 / long run 0.4053
+    - 6h: 21 calls (86 a day), hit rate 0.429, chance 0.123, lift 3.49x
+    - 24h: 62 calls (62 a day), hit rate 0.403, chance 0.120, lift 3.36x
+    - 7d: 408 calls (58 a day), hit rate 0.373, chance 0.122, lift 3.06x
+    - 30d: 2016 calls (67 a day), hit rate 0.399, chance 0.122, lift 3.28x
+  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 279, 0.395; 0.35: 210, 0.470; 0.40: 163, 0.534; 0.45: 129, 0.584; 0.50: 98, 0.625; 0.55: 69, 0.679; 0.60: 46, 0.722; 0.65: 25, 0.755; 0.70: 9, 0.796; 0.75: 1, 0.806
+  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 191, 0.343; 0.35: 120, 0.380; 0.40: 50, 0.407; 0.45: 10, 0.430; 0.50: 1, 0.452
+- **K=13**: model 1790208000, labels learned 88581, probability skill vs chance 0.1921, widened contest next: False
+  - now: threshold 0.4103, hit rate recent 0.6708 / long run 0.593
+    - 6h: 11 calls (46 a day), hit rate 0.727, chance 0.094, naive rule 0.318, lift 7.72x
+    - 24h: 48 calls (49 a day), hit rate 0.708, chance 0.081, naive rule 0.285, lift 8.70x
+    - 7d: 342 calls (49 a day), hit rate 0.591, chance 0.078, naive rule 0.265, lift 7.53x
+    - 30d: 1425 calls (48 a day), hit rate 0.587, chance 0.077, naive rule 0.267, lift 7.66x
+  - next: threshold 0.2608, hit rate recent 0.3111 / long run 0.2968
+    - 6h: 24 calls (100 a day), hit rate 0.333, chance 0.094, lift 3.54x
+    - 24h: 81 calls (82 a day), hit rate 0.321, chance 0.081, lift 3.94x
+    - 7d: 614 calls (88 a day), hit rate 0.270, chance 0.078, lift 3.45x
+    - 30d: 1993 calls (66 a day), hit rate 0.307, chance 0.077, lift 4.01x
+  - now, what each threshold would give (threshold: calls a day, hit rate): 0.30: 124, 0.432; 0.35: 91, 0.489; 0.40: 65, 0.536; 0.45: 46, 0.594; 0.50: 29, 0.615; 0.55: 17, 0.654; 0.60: 7, 0.671; 0.65: 2, 0.754; 0.70: 0, 0.667
+  - next, what each threshold would give (threshold: calls a day, hit rate): 0.30: 52, 0.316; 0.35: 18, 0.348; 0.40: 4, 0.328; 0.45: 1, 0.417
 
 ## Probability quality (full model)
 
 | window | pinball x1e5 | skill vs empirical | cov 90% | cov 50% | Brier | dir acc | vol corr |
 |---|---|---|---|---|---|---|---|
-| 1h | 5.163 | 12.65% | 0.850 | 0.467 | 0.251 | 0.467 | 0.371 |
-| 6h | 5.368 | 14.02% | 0.881 | 0.481 | 0.251 | 0.496 | 0.299 |
-| 24h | 10.983 | 9.10% | 0.901 | 0.497 | 0.250 | 0.498 | 0.709 |
-| 7d | 12.925 | 4.04% | 0.900 | 0.499 | 0.251 | 0.496 | 0.665 |
-| 30d | 14.592 | 4.15% | 0.900 | 0.500 | 0.251 | 0.500 | 0.677 |
+| 1h | 4.130 | 9.07% | 0.900 | 0.617 | 0.246 | 0.617 | 0.204 |
+| 6h | 4.843 | 10.56% | 0.872 | 0.519 | 0.250 | 0.523 | 0.205 |
+| 24h | 7.782 | 10.81% | 0.897 | 0.504 | 0.250 | 0.500 | 0.659 |
+| 7d | 12.879 | 4.09% | 0.900 | 0.502 | 0.251 | 0.496 | 0.668 |
+| 30d | 14.473 | 4.16% | 0.900 | 0.500 | 0.251 | 0.499 | 0.678 |
 
 ## Per-agent pinball loss x1e5
 
 | window | empirical | ewma | garch | har | bocpd | hmm | online_qr | lgbm | ensemble | calibrated |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1h | 5.911 | 5.248 | 5.331 | 5.233 | 5.229 | 5.640 | 5.099 | 5.091 | 5.129 | 5.163 |
-| 6h | 6.244 | 5.379 | 5.572 | 5.433 | 5.450 | 5.861 | 5.347 | 5.353 | 5.352 | 5.368 |
-| 24h | 12.083 | 11.159 | 11.161 | 11.023 | 11.295 | 11.323 | 11.024 | 11.003 | 10.989 | 10.983 |
-| 7d | 13.470 | 13.027 | 13.004 | 12.936 | 13.168 | 13.090 | 12.917 | 12.912 | 12.901 | 12.925 |
-| 30d | 15.223 | 14.730 | 14.682 | 14.618 | 14.876 | 14.807 | 14.600 | 14.566 | 14.565 | 14.592 |
+| 1h | 4.542 | 4.221 | 4.301 | 4.110 | 4.375 | 4.767 | 4.102 | 4.134 | 4.135 | 4.130 |
+| 6h | 5.414 | 4.873 | 4.972 | 4.889 | 4.995 | 5.313 | 4.830 | 4.820 | 4.831 | 4.843 |
+| 24h | 8.725 | 7.907 | 7.948 | 7.820 | 8.038 | 8.166 | 7.802 | 7.777 | 7.785 | 7.782 |
+| 7d | 13.428 | 12.979 | 12.959 | 12.890 | 13.122 | 13.045 | 12.871 | 12.866 | 12.855 | 12.879 |
+| 30d | 15.102 | 14.612 | 14.563 | 14.500 | 14.756 | 14.689 | 14.481 | 14.446 | 14.446 | 14.473 |
 
 ## Next candle
 
-- candle starting 2026-10-03 12:28 UTC, last close 2684.32
-- P(up) 0.4873, return quantiles (bp): {'05': -4.418, '10': -3.194, '25': -1.598, '40': -0.598, '50': -0.075, '60': 0.529, '75': 1.655, '90': 3.237, '95': 4.322}
-- changepoint probability 0.5379, regime age 155.8 min
-- agent weights: empirical 0.003, ewma 0.145, garch 0.035, har 0.172, bocpd 0.049, hmm 0.006, online_qr 0.281, lgbm 0.309
+- candle starting 2026-10-03 16:37 UTC, last close 2681.11
+- P(up) 0.5272, return quantiles (bp): {'05': -2.361, '10': -1.651, '25': -0.757, '40': -0.179, '50': 0.064, '60': 0.209, '75': 0.726, '90': 1.703, '95': 2.322}
+- changepoint probability 0.0222, regime age 547.8 min
+- agent weights: empirical 0.003, ewma 0.151, garch 0.050, har 0.173, bocpd 0.035, hmm 0.004, online_qr 0.282, lgbm 0.302
 
 ## Learning log
 
@@ -149,7 +149,7 @@ score = 0.5 x body overlap + 0.5 x range overlap (1.0 = identical candle). `site
 - 2026-10-02 12:00 UTC: {"garch": {"alpha": 0.081, "beta": 0.8977}, "hmm": {"sd_bp": [3.12, 5.5, 12.2], "stay": [0.95, 0.947, 0.932]}}
 - 2026-10-03 00:00 UTC: {"garch": {"alpha": 0.0973, "beta": 0.8751}, "hmm": {"sd_bp": [3.13, 5.67, 13.01], "stay": [0.959, 0.947, 0.917]}}
 - 2026-10-03 12:00 UTC: {"garch": {"alpha": 0.0794, "beta": 0.9127}, "hmm": {"sd_bp": [2.66, 5.39, 13.26], "stay": [0.967, 0.956, 0.918]}}
-- HMM volatility states (sd, bp per minute): [2.66, 5.39, 13.26], current probabilities: [0.743, 0.253, 0.004]
-- live generator: {'versions': 60, 'latest_effective': '2026-10-03 12:40 UTC', 'rows': 2880, 'fit_r2': {'logit_p': 0.192, 'l_abs': 0.658, 'l_hi': 0.778, 'l_lo': 0.739, 'b05': 0.653, 'b25': 0.717, 'b75': 0.651, 'b95': 0.67}}
-- goal tuner (multipliers that currently maximise the candle score): {'body_scale': 1.2, 'reach_scale': 1.4, 'ahead': [[1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.2, 1.6], [1.2, 1.6], [1.2, 1.6], [1.3, 1.6], [1.3, 1.6], [1.2, 1.6], [1.2, 1.6]], 'cone_width': [1.496, 1.988, 2.255, 2.476, 3.004, 3.187, 3.346, 3.556, 3.609, 3.644, 3.591, 3.745, 3.742, 3.959]}
-- calibration offsets (in sigma): {'05': 0.0535, '10': 0.057, '25': 0.0075, '40': -0.012, '50': -0.015, '60': -0.018, '75': -0.0075, '90': -0.047, '95': -0.0535}
+- HMM volatility states (sd, bp per minute): [2.66, 5.39, 13.26], current probabilities: [0.966, 0.034, 0.0]
+- live generator: {'versions': 60, 'latest_effective': '2026-10-03 16:45 UTC', 'rows': 2880, 'fit_r2': {'logit_p': 0.18, 'l_abs': 0.633, 'l_hi': 0.768, 'l_lo': 0.725, 'b05': 0.645, 'b25': 0.681, 'b75': 0.637, 'b95': 0.664}}
+- goal tuner (multipliers that currently maximise the candle score): {'body_scale': 1.2, 'reach_scale': 1.4, 'ahead': [[1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.3, 1.6], [1.2, 1.6], [1.3, 1.6], [1.2, 1.6], [1.3, 1.6], [1.3, 1.6], [1.2, 1.6], [1.3, 1.6]], 'cone_width': [1.469, 1.992, 2.448, 2.742, 3.133, 3.39, 3.489, 3.635, 3.544, 4.116, 4.574, 5.066, 4.672, 4.384]}
+- calibration offsets (in sigma): {'05': 0.008, '10': 0.046, '25': 0.06, '40': 0.044, '50': 0.04, '60': -0.044, '75': -0.06, '90': -0.016, '95': -0.028}
