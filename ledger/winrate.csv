@@ -1,5 +1,6 @@
 day,layer,n,wins,base,live
 2026-09-02,chain_end_side,96,51,0.5,0
+2026-09-02,colour_clear,829,423,0.5,0
 2026-09-02,colour_next,1433,717,0.5,0
 2026-09-02,colour_path,20062,9931,0.5,0
 2026-09-02,reversal_k13_next,85,21,0.0736,0
@@ -11,6 +12,7 @@ day,layer,n,wins,base,live
 2026-09-02,reversal_k8_next,86,29,0.1174,0
 2026-09-02,reversal_k8_now,41,32,0.1174,0
 2026-09-03,chain_end_side,96,54,0.5,0
+2026-09-03,colour_clear,831,389,0.5,0
 2026-09-03,colour_next,1436,703,0.5,0
 2026-09-03,colour_path,20104,9958,0.5,0
 2026-09-03,reversal_k13_next,129,31,0.0785,0
@@ -22,6 +24,7 @@ day,layer,n,wins,base,live
 2026-09-03,reversal_k8_next,79,27,0.1132,0
 2026-09-03,reversal_k8_now,45,26,0.1132,0
 2026-09-04,chain_end_side,96,54,0.5,0
+2026-09-04,colour_clear,727,360,0.5,0
 2026-09-04,colour_next,1433,717,0.5,0
 2026-09-04,colour_path,20062,10023,0.5,0
 2026-09-04,reversal_k13_next,72,24,0.076,0
@@ -33,6 +36,7 @@ day,layer,n,wins,base,live
 2026-09-04,reversal_k8_next,77,31,0.1302,0
 2026-09-04,reversal_k8_now,56,36,0.1302,0
 2026-09-05,chain_end_side,96,58,0.5,0
+2026-09-05,colour_clear,735,361,0.5,0
 2026-09-05,colour_next,1409,721,0.5,0
 2026-09-05,colour_path,19726,9872,0.5,0
 2026-09-05,reversal_k13_next,60,18,0.0799,0
@@ -44,6 +48,7 @@ day,layer,n,wins,base,live
 2026-09-05,reversal_k8_next,72,30,0.1465,0
 2026-09-05,reversal_k8_now,47,36,0.1465,0
 2026-09-06,chain_end_side,96,43,0.5,0
+2026-09-06,colour_clear,784,393,0.5,0
 2026-09-06,colour_next,1429,708,0.5,0
 2026-09-06,colour_path,20006,9931,0.5,0
 2026-09-06,reversal_k13_next,58,19,0.076,0
@@ -55,6 +60,7 @@ day,layer,n,wins,base,live
 2026-09-06,reversal_k8_next,76,26,0.1146,0
 2026-09-06,reversal_k8_now,65,39,0.1146,0
 2026-09-07,chain_end_side,96,46,0.5,0
+2026-09-07,colour_clear,809,385,0.5,0
 2026-09-07,colour_next,1434,688,0.5,0
 2026-09-07,colour_path,20076,10080,0.5,0
 2026-09-07,reversal_k13_next,70,20,0.0729,0
@@ -66,6 +72,7 @@ day,layer,n,wins,base,live
 2026-09-07,reversal_k8_next,82,31,0.1174,0
 2026-09-07,reversal_k8_now,57,41,0.1174,0
 2026-09-08,chain_end_side,96,48,0.5,0
+2026-09-08,colour_clear,845,427,0.5,0
 2026-09-08,colour_next,1434,752,0.5,0
 2026-09-08,colour_path,20076,10055,0.5,0
 2026-09-08,reversal_k13_next,58,19,0.0729,0
@@ -77,6 +84,7 @@ day,layer,n,wins,base,live
 2026-09-08,reversal_k8_next,78,25,0.1198,0
 2026-09-08,reversal_k8_now,54,36,0.1198,0
 2026-09-09,chain_end_side,96,54,0.5,0
+2026-09-09,colour_clear,791,401,0.5,0
 2026-09-09,colour_next,1437,738,0.5,0
 2026-09-09,colour_path,20118,10079,0.5,0
 2026-09-09,reversal_k13_next,74,19,0.0694,0
@@ -88,6 +96,7 @@ day,layer,n,wins,base,live
 2026-09-09,reversal_k8_next,56,18,0.1122,0
 2026-09-09,reversal_k8_now,44,30,0.1122,0
 2026-09-10,chain_end_side,96,43,0.5,0
+2026-09-10,colour_clear,788,396,0.5,0
 2026-09-10,colour_next,1431,712,0.5,0
 2026-09-10,colour_path,20034,9891,0.5,0
 2026-09-10,reversal_k13_next,66,23,0.0795,0
@@ -99,6 +108,7 @@ day,layer,n,wins,base,live
 2026-09-10,reversal_k8_next,92,35,0.1233,0
 2026-09-10,reversal_k8_now,61,44,0.1233,0
 2026-09-11,chain_end_side,96,45,0.5,0
+2026-09-11,colour_clear,766,375,0.5,0
 2026-09-11,colour_next,1432,696,0.5,0
 2026-09-11,colour_path,20048,9949,0.5,0
 2026-09-11,reversal_k13_next,52,16,0.0729,0
@@ -110,6 +120,7 @@ day,layer,n,wins,base,live
 2026-09-11,reversal_k8_next,68,26,0.1087,0
 2026-09-11,reversal_k8_now,45,32,0.1087,0
 2026-09-12,chain_end_side,96,45,0.5,0
+2026-09-12,colour_clear,685,352,0.5,0
 2026-09-12,colour_next,1403,716,0.5,0
 2026-09-12,colour_path,19642,9793,0.5,0
 2026-09-12,reversal_k13_next,42,10,0.0799,0
@@ -121,6 +132,7 @@ day,layer,n,wins,base,live
 2026-09-12,reversal_k8_next,62,20,0.1326,0
 2026-09-12,reversal_k8_now,64,46,0.1326,0
 2026-09-13,chain_end_side,95,51,0.5,0
+2026-09-13,colour_clear,737,381,0.5,0
 2026-09-13,colour_next,1418,724,0.5,0
 2026-09-13,colour_path,19852,9947,0.5,0
 2026-09-13,reversal_k13_next,73,17,0.0653,0
@@ -132,6 +144,7 @@ day,layer,n,wins,base,live
 2026-09-13,reversal_k8_next,95,35,0.1226,0
 2026-09-13,reversal_k8_now,48,34,0.1226,0
 2026-09-14,chain_end_side,96,36,0.5,0
+2026-09-14,colour_clear,778,369,0.5,0
 2026-09-14,colour_next,1431,705,0.5,0
 2026-09-14,colour_path,20034,10200,0.5,0
 2026-09-14,reversal_k13_next,85,27,0.0792,0
@@ -143,6 +156,7 @@ day,layer,n,wins,base,live
 2026-09-14,reversal_k8_next,67,27,0.1104,0
 2026-09-14,reversal_k8_now,52,42,0.1104,0
 2026-09-15,chain_end_side,96,41,0.5,0
+2026-09-15,colour_clear,791,395,0.5,0
 2026-09-15,colour_next,1433,710,0.5,0
 2026-09-15,colour_path,20062,10112,0.5,0
 2026-09-15,reversal_k13_next,80,25,0.0701,0
@@ -154,6 +168,7 @@ day,layer,n,wins,base,live
 2026-09-15,reversal_k8_next,69,33,0.1097,0
 2026-09-15,reversal_k8_now,52,35,0.1097,0
 2026-09-16,chain_end_side,96,49,0.5,0
+2026-09-16,colour_clear,787,395,0.5,0
 2026-09-16,colour_next,1436,711,0.5,0
 2026-09-16,colour_path,20104,10054,0.5,0
 2026-09-16,reversal_k13_next,48,19,0.0816,0
@@ -165,6 +180,7 @@ day,layer,n,wins,base,live
 2026-09-16,reversal_k8_next,110,41,0.1274,0
 2026-09-16,reversal_k8_now,50,35,0.1274,0
 2026-09-17,chain_end_side,96,42,0.5,0
+2026-09-17,colour_clear,793,382,0.5,0
 2026-09-17,colour_next,1432,699,0.5,0
 2026-09-17,colour_path,20048,10009,0.5,0
 2026-09-17,reversal_k13_next,48,15,0.0691,0
@@ -176,6 +192,7 @@ day,layer,n,wins,base,live
 2026-09-17,reversal_k8_next,80,31,0.1111,0
 2026-09-17,reversal_k8_now,43,26,0.1111,0
 2026-09-18,chain_end_side,96,47,0.5,0
+2026-09-18,colour_clear,800,408,0.5,0
 2026-09-18,colour_next,1432,744,0.5,0
 2026-09-18,colour_path,20048,10048,0.5,0
 2026-09-18,reversal_k13_next,58,19,0.0757,0
@@ -187,6 +204,7 @@ day,layer,n,wins,base,live
 2026-09-18,reversal_k8_next,60,28,0.1264,0
 2026-09-18,reversal_k8_now,55,34,0.1264,0
 2026-09-19,chain_end_side,95,49,0.5,0
+2026-09-19,colour_clear,771,373,0.5,0
 2026-09-19,colour_next,1433,709,0.5,0
 2026-09-19,colour_path,20062,10140,0.5,0
 2026-09-19,reversal_k13_next,54,25,0.0861,0
@@ -198,6 +216,7 @@ day,layer,n,wins,base,live
 2026-09-19,reversal_k8_next,66,35,0.1271,0
 2026-09-19,reversal_k8_now,55,46,0.1271,0
 2026-09-20,chain_end_side,96,59,0.5,0
+2026-09-20,colour_clear,788,418,0.5,0
 2026-09-20,colour_next,1433,755,0.5,0
 2026-09-20,colour_path,20062,10081,0.5,0
 2026-09-20,reversal_k13_next,46,19,0.0819,0
@@ -209,6 +228,7 @@ day,layer,n,wins,base,live
 2026-09-20,reversal_k8_next,60,36,0.1306,0
 2026-09-20,reversal_k8_now,55,44,0.1306,0
 2026-09-21,chain_end_side,96,56,0.5,0
+2026-09-21,colour_clear,802,400,0.5,0
 2026-09-21,colour_next,1436,705,0.5,0
 2026-09-21,colour_path,20104,10128,0.5,0
 2026-09-21,reversal_k13_next,46,17,0.0771,0
@@ -220,6 +240,7 @@ day,layer,n,wins,base,live
 2026-09-21,reversal_k8_next,59,24,0.1198,0
 2026-09-21,reversal_k8_now,59,41,0.1198,0
 2026-09-22,chain_end_side,96,49,0.5,0
+2026-09-22,colour_clear,843,432,0.5,0
 2026-09-22,colour_next,1435,731,0.5,0
 2026-09-22,colour_path,20090,10107,0.5,0
 2026-09-22,reversal_k13_next,51,18,0.0788,0
@@ -231,6 +252,7 @@ day,layer,n,wins,base,live
 2026-09-22,reversal_k8_next,65,31,0.1205,0
 2026-09-22,reversal_k8_now,53,37,0.1205,0
 2026-09-23,chain_end_side,96,55,0.5,0
+2026-09-23,colour_clear,812,398,0.5,0
 2026-09-23,colour_next,1437,686,0.5,0
 2026-09-23,colour_path,20118,10019,0.5,0
 2026-09-23,reversal_k13_next,43,13,0.0781,0
@@ -242,6 +264,7 @@ day,layer,n,wins,base,live
 2026-09-23,reversal_k8_next,49,21,0.1149,0
 2026-09-23,reversal_k8_now,58,42,0.1149,0
 2026-09-24,chain_end_side,96,52,0.5,0
+2026-09-24,colour_clear,787,381,0.5,0
 2026-09-24,colour_next,1436,703,0.5,0
 2026-09-24,colour_path,20104,9996,0.5,0
 2026-09-24,reversal_k13_next,47,13,0.0667,0
@@ -253,6 +276,7 @@ day,layer,n,wins,base,live
 2026-09-24,reversal_k8_next,60,22,0.1215,0
 2026-09-24,reversal_k8_now,57,40,0.1215,0
 2026-09-25,chain_end_side,96,39,0.5,0
+2026-09-25,colour_clear,769,368,0.5,0
 2026-09-25,colour_next,1438,694,0.5,0
 2026-09-25,colour_path,20132,10118,0.5,0
 2026-09-25,reversal_k13_next,68,26,0.0795,0
@@ -264,6 +288,7 @@ day,layer,n,wins,base,live
 2026-09-25,reversal_k8_next,49,23,0.1205,0
 2026-09-25,reversal_k8_now,46,39,0.1205,0
 2026-09-26,chain_end_side,96,56,0.5,0
+2026-09-26,colour_clear,717,364,0.5,0
 2026-09-26,colour_next,1409,717,0.5,0
 2026-09-26,colour_path,19726,9887,0.5,0
 2026-09-26,reversal_k13_next,59,16,0.076,0
@@ -275,6 +300,7 @@ day,layer,n,wins,base,live
 2026-09-26,reversal_k8_next,48,19,0.1247,0
 2026-09-26,reversal_k8_now,50,40,0.1247,0
 2026-09-27,chain_end_side,96,57,0.5,0
+2026-09-27,colour_clear,774,394,0.5,0
 2026-09-27,colour_next,1422,722,0.5,0
 2026-09-27,colour_path,19908,9933,0.5,0
 2026-09-27,reversal_k13_next,62,15,0.0851,0
@@ -286,6 +312,7 @@ day,layer,n,wins,base,live
 2026-09-27,reversal_k8_next,68,25,0.1174,0
 2026-09-27,reversal_k8_now,53,44,0.1174,0
 2026-09-28,chain_end_side,96,54,0.5,0
+2026-09-28,colour_clear,778,392,0.5,0
 2026-09-28,colour_next,1434,741,0.5,0
 2026-09-28,colour_path,20076,10136,0.5,0
 2026-09-28,reversal_k13_next,97,27,0.0781,0
@@ -297,6 +324,7 @@ day,layer,n,wins,base,live
 2026-09-28,reversal_k8_next,43,15,0.1163,0
 2026-09-28,reversal_k8_now,35,24,0.1163,0
 2026-09-29,chain_end_side,95,43,0.5,0
+2026-09-29,colour_clear,796,394,0.5,0
 2026-09-29,colour_next,1436,722,0.5,0
 2026-09-29,colour_path,20104,10029,0.5,0
 2026-09-29,reversal_k13_next,108,28,0.0722,0
@@ -308,6 +336,7 @@ day,layer,n,wins,base,live
 2026-09-29,reversal_k8_next,62,26,0.1198,0
 2026-09-29,reversal_k8_now,48,32,0.1198,0
 2026-09-30,chain_end_side,96,46,0.5,0
+2026-09-30,colour_clear,798,394,0.5,0
 2026-09-30,colour_next,1438,720,0.5,0
 2026-09-30,colour_path,20132,10253,0.5,0
 2026-09-30,reversal_k13_next,104,26,0.076,0
@@ -319,6 +348,7 @@ day,layer,n,wins,base,live
 2026-09-30,reversal_k8_next,67,21,0.1208,0
 2026-09-30,reversal_k8_now,41,30,0.1208,0
 2026-10-01,chain_end_side,96,46,0.5,0
+2026-10-01,colour_clear,807,374,0.5,0
 2026-10-01,colour_next,1437,711,0.5,0
 2026-10-01,colour_path,20118,10177,0.5,0
 2026-10-01,reversal_k13_next,104,32,0.0799,0
@@ -330,6 +360,7 @@ day,layer,n,wins,base,live
 2026-10-01,reversal_k8_next,54,24,0.1351,0
 2026-10-01,reversal_k8_now,47,32,0.1351,0
 2026-10-02,chain_end_side,95,52,0.5,0
+2026-10-02,colour_clear,720,360,0.5,0
 2026-10-02,colour_next,1432,722,0.5,0
 2026-10-02,colour_path,20048,9958,0.5,0
 2026-10-02,reversal_k13_next,58,14,0.075,0
@@ -340,14 +371,17 @@ day,layer,n,wins,base,live
 2026-10-02,reversal_k5_now,59,50,0.1965,0
 2026-10-02,reversal_k8_next,47,19,0.1267,0
 2026-10-02,reversal_k8_now,51,38,0.1267,0
-2026-10-03,chain_end_side,66,37,0.5,1
-2026-10-03,colour_next,982,491,0.5,1
-2026-10-03,colour_path,13748,6799,0.5,1
-2026-10-03,reversal_k13_next,65,22,0.086,1
-2026-10-03,reversal_k13_now,31,24,0.086,1
-2026-10-03,reversal_k3_next,94,47,0.2845,1
-2026-10-03,reversal_k3_now,39,36,0.2845,1
-2026-10-03,reversal_k5_next,127,50,0.1862,1
-2026-10-03,reversal_k5_now,43,36,0.1862,1
-2026-10-03,reversal_k8_next,51,20,0.1184,1
-2026-10-03,reversal_k8_now,34,29,0.1184,1
+2026-10-03,chain_end_side,74,41,0.5,1
+2026-10-03,colour_clear,575,296,0.5,1
+2026-10-03,colour_confident,28,15,0.5,1
+2026-10-03,colour_next,1099,552,0.5,1
+2026-10-03,colour_path,15386,7602,0.5,1
+2026-10-03,colour_strong,6,4,0.5,1
+2026-10-03,reversal_k13_next,79,25,0.0835,1
+2026-10-03,reversal_k13_now,33,24,0.0835,1
+2026-10-03,reversal_k3_next,105,53,0.2882,1
+2026-10-03,reversal_k3_now,42,39,0.2882,1
+2026-10-03,reversal_k5_next,142,57,0.1887,1
+2026-10-03,reversal_k5_now,46,38,0.1887,1
+2026-10-03,reversal_k8_next,60,22,0.1138,1
+2026-10-03,reversal_k8_now,37,29,0.1138,1
