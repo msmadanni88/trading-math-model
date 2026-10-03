@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from . import data, report, store
+from . import data, probe, report, store
 from .config import BUF, GRAN, PRODUCT, REPLAY_DAYS, START, STUDENT_LEAD, STUDENT_STEP
 from .engine import STATE_VERSION, Engine
 from .features import compute_features, feature_names, regularize
@@ -188,6 +188,13 @@ def step(state_dir, cache_dir, offline=False, now=None):
     if fetch_err:
         status["error"] = "candle download failed: " + fetch_err
     rep = report.build(fc, eng, df, status, state_dir, meta)
+    # once per probe version: which other venues answer from here (see probe.py)
+    pp = os.path.join(state_dir, "reports", "probe.json")
+    if not offline and (store.read_json(pp) or {}).get("v") != probe.PROBE_V:
+        try:
+            store.write_json(pp, probe.run(now), indent=1)
+        except Exception as e:                      # never let a probe stop a run
+            print("probe failed:", e)
     with open(os.path.join(state_dir, "status.json"), "w") as f:
         json.dump(status, f, indent=1)
     print(json.dumps({k: status[k] for k in ("run_at", "n_new_candles", "n_processed", "replay", "duration_s", "error")}))
