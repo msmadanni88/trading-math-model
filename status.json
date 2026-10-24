@@ -1,15 +1,15 @@
 {
- "run_ts": 1792834902,
- "run_at": "2026-10-24T09:41:42Z",
+ "run_ts": 1792849034,
+ "run_at": "2026-10-24T13:37:14Z",
  "product": "ETH-USD",
  "error": null,
- "n_new_candles": 259,
- "n_processed": 259,
+ "n_new_candles": 236,
+ "n_processed": 236,
  "replay": false,
  "replay_reason": null,
  "fetch_error": null,
  "x_fetch_error": null,
- "x_last_ts": 1792834800,
- "last_candle_ts": 1792834800,
- "duration_s": 8.0
+ "x_last_ts": 1792848960,
+ "last_candle_ts": 1792848960,
+ "duration_s": 8.4
 }
